@@ -3,6 +3,9 @@ name: Build macOS App and DMG
 on:
   workflow_dispatch:
   push:
+    branches:
+      - master
+      - main
     tags:
       - "v*"
 
