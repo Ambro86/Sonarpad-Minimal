@@ -11,7 +11,7 @@ on:
 
 jobs:
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-14
 
     steps:
       - name: Checkout
@@ -35,6 +35,71 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      - name: Download pdfium for macOS
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist/pdfium
+          curl -L --fail \
+            "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-arm64.tgz" \
+            -o dist/pdfium/pdfium-mac-arm64.tgz
+          tar -xzf dist/pdfium/pdfium-mac-arm64.tgz -C dist/pdfium
+          PDFIUM_DYLIB="$(find dist/pdfium -type f -name 'libpdfium.dylib' | head -n 1)"
+          test -n "${PDFIUM_DYLIB}"
+          echo "PDFIUM_DYLIB=${PDFIUM_DYLIB}" >> "${GITHUB_ENV}"
+
+      - name: Download curl-impersonate for macOS arm64
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist/curl-cffi
+          python3 - <<'PY'
+          import json
+          import re
+          import urllib.request
+          from pathlib import Path
+
+          api_url = "https://api.github.com/repos/lexiforest/curl_cffi/releases/latest"
+          with urllib.request.urlopen(api_url) as response:
+              release = json.load(response)
+
+          asset = None
+          pattern = re.compile(r"^curl_cffi-.*-macosx_.*_arm64\.whl$")
+          for candidate in release.get("assets", []):
+              name = candidate.get("name", "")
+              if pattern.match(name):
+                  asset = candidate
+                  break
+
+          if asset is None:
+              raise SystemExit("No macOS arm64 curl_cffi wheel found in latest release")
+
+          env_path = Path(".github") / "curl_cffi_asset.env"
+          env_path.write_text(
+              f"CURL_CFFI_WHEEL_URL={asset['browser_download_url']}\n"
+              f"CURL_CFFI_WHEEL_NAME={asset['name']}\n",
+              encoding="utf-8",
+          )
+          PY
+          cat .github/curl_cffi_asset.env >> "${GITHUB_ENV}"
+          curl -L --fail "${CURL_CFFI_WHEEL_URL}" -o "dist/curl-cffi/${CURL_CFFI_WHEEL_NAME}"
+          python3 - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          wheel_path = next(Path("dist/curl-cffi").glob("*.whl"))
+          extract_dir = Path("dist/curl-cffi/extracted")
+          extract_dir.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(wheel_path) as wheel:
+              wheel.extractall(extract_dir)
+          dylibs = sorted(str(path) for path in extract_dir.rglob("*.dylib"))
+          if not dylibs:
+              raise SystemExit("No .dylib files found inside curl_cffi wheel")
+          print("Extracted dylibs:")
+          for dylib in dylibs:
+              print(dylib)
+          PY
+
       - name: Package .app and .dmg
         shell: bash
         run: |
@@ -46,10 +111,18 @@ jobs:
           APP_DIR="${STAGE_DIR}/${APP_NAME}.app"
           CONTENTS_DIR="${APP_DIR}/Contents"
           MACOS_DIR="${CONTENTS_DIR}/MacOS"
+          FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
 
-          mkdir -p "${MACOS_DIR}"
+          mkdir -p "${MACOS_DIR}" "${FRAMEWORKS_DIR}"
           cp "target/release/${BIN_NAME}" "${MACOS_DIR}/${APP_NAME}"
           chmod +x "${MACOS_DIR}/${APP_NAME}"
+          cp "${PDFIUM_DYLIB}" "${FRAMEWORKS_DIR}/libpdfium.dylib"
+          chmod +x "${FRAMEWORKS_DIR}/libpdfium.dylib"
+          find "dist/curl-cffi/extracted" -type f -name '*.dylib' -print0 | while IFS= read -r -d '' dylib; do
+            dylib_name="$(basename "${dylib}")"
+            cp "${dylib}" "${FRAMEWORKS_DIR}/${dylib_name}"
+            chmod +x "${FRAMEWORKS_DIR}/${dylib_name}"
+          done
 
           cat > "${CONTENTS_DIR}/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -108,7 +181,7 @@ jobs:
           set -euxo pipefail
           APP_NAME="Sonarpad Minimal"
           STAGE_DIR="dist/stage"
-          DMG_NAME="Sonarpad-Minimal-macOS.dmg"
+          DMG_NAME="Sonarpad-Minimal-macOS-AppleSilicon.dmg"
           mkdir -p dist
           hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGE_DIR}" -ov -format UDZO "dist/${DMG_NAME}"
 
@@ -116,10 +189,12 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          DMG_PATH="dist/Sonarpad-Minimal-macOS.dmg"
+          DMG_PATH="dist/Sonarpad-Minimal-macOS-AppleSilicon.dmg"
           MOUNT_DIR="$(mktemp -d)"
           hdiutil attach "${DMG_PATH}" -mountpoint "${MOUNT_DIR}" -nobrowse -quiet
           test -d "${MOUNT_DIR}/Sonarpad Minimal.app"
+          test -f "${MOUNT_DIR}/Sonarpad Minimal.app/Contents/Frameworks/libpdfium.dylib"
+          find "${MOUNT_DIR}/Sonarpad Minimal.app/Contents/Frameworks" -type f -name 'libcurl*.dylib' | grep .
           codesign --verify --deep --strict --verbose=2 "${MOUNT_DIR}/Sonarpad Minimal.app"
           hdiutil detach "${MOUNT_DIR}" -quiet
 
@@ -127,4 +202,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sonarpad-minimal-macos-dmg
-          path: dist/Sonarpad-Minimal-macOS.dmg
+          path: dist/Sonarpad-Minimal-macOS-AppleSilicon.dmg

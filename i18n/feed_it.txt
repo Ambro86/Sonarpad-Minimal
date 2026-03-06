@@ -1,0 +1,33 @@
+Corriere della Sera | https://xml2.corriereobjects.it/feed-hp/homepage.xml
+La Repubblica | https://www.repubblica.it/rss/homepage/rss2.0.xml
+ANSA | https://www.ansa.it/sito/ansait_rss.xml
+Il Sole 24 Ore | http://www.ilsole24ore.com/rss/primapagina.xml
+La Stampa | https://www.lastampa.it/rss/copertina.xml
+Adnkronos | https://www.adnkronos.com/RSS_PrimaPagina.xml
+Tgcom24 | http://www.tgcom24.mediaset.it/rss/homepage.xml
+Il Fatto Quotidiano | https://www.ilfattoquotidiano.it/feed/
+Il Post | https://www.ilpost.it/feed/
+Fanpage | https://www.fanpage.it/feed/
+Open | https://www.open.online/feed/
+Internazionale | https://www.internazionale.it/rss
+Affaritaliani | https://www.affaritaliani.it/static/rss/rssGadget.aspx?idchannel=1
+HuffPost Italia | https://www.huffingtonpost.it/rss
+DDay | https://www.dday.it/rss
+HDblog | https://www.hdblog.it/feed/
+HWUpgrade | https://www.hwupgrade.it/rss/news.xml
+Tom's Hardware Italia | https://www.tomshw.it/feed/
+Everyeye | https://www.everyeye.it/rss/news/
+GameSource | https://www.gamesource.it/feed/
+Aranzulla | https://www.aranzulla.it/feed/
+Calcio e Finanza | https://www.calcioefinanza.it/feed/
+La Gazzetta dello Sport | https://www.gazzetta.it/dynamic-feed/rss/section/last.xml
+Corriere dello Sport | https://www.corrieredellosport.it/rss/
+Motorsport Italia | https://www.motorsport.com/rss/f1/news/
+AlVolante | https://www.alvolante.it/rss.xml
+Motori.it | https://www.motori.it/rss/
+StartMag | https://www.startmag.it/feed/
+Formiche | https://www.formiche.net/feed/
+Linkiesta | https://www.linkiesta.it/feed/
+Il Foglio | https://www.ilfoglio.it/rss.xml
+Il Giornale | https://www.ilgiornale.it/rss.xml
+Quotidiano.net | https://www.quotidiano.net/rss

@@ -1,13 +1,21 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod articles;
+mod curl_client;
 mod edge_tts;
 mod file_loader;
+mod podcast_player;
+mod podcasts;
+mod reader;
 
 use rodio::{Decoder, OutputStream, Sink};
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 use wxdragon::prelude::*;
@@ -15,9 +23,40 @@ use wxdragon::timer::Timer;
 
 const ID_OPEN: i32 = 101;
 const ID_EXIT: i32 = 102;
+const ID_ABOUT: i32 = 103;
+const ID_DONATIONS: i32 = 104;
 const ID_PLAY_PAUSE: i32 = 2001;
 const ID_STOP: i32 = 2003;
 const ID_SAVE: i32 = 2002;
+const ID_SETTINGS: i32 = 2004;
+const ID_PODCAST_BACKWARD: i32 = 2005;
+const ID_PODCAST_FORWARD: i32 = 2006;
+const ID_ARTICLES_ADD_SOURCE: i32 = 2100;
+const ID_ARTICLES_DELETE_SOURCE: i32 = 2101;
+const ID_ARTICLES_EDIT_SOURCE: i32 = 2102;
+const ID_ARTICLES_REORDER_SOURCES: i32 = 2103;
+const ID_PODCASTS_ADD: i32 = 2300;
+const ID_PODCASTS_DELETE: i32 = 2301;
+const ID_PODCASTS_CATEGORY_BASE: i32 = 2400;
+const ID_PODCASTS_SOURCE_BASE: i32 = 2600;
+const ID_PODCASTS_EPISODE_BASE: i32 = 30000;
+const ID_ARTICLES_SOURCE_BASE: i32 = 2200;
+const ID_ARTICLES_ARTICLE_BASE: i32 = 10000;
+const MAX_MENU_ARTICLES_PER_SOURCE: usize = 30;
+const MAX_MENU_PODCAST_EPISODES_PER_SOURCE: usize = 30;
+const PODCAST_SEEK_SECONDS: f64 = 30.0;
+const WXK_LEFT: i32 = 314;
+const WXK_RIGHT: i32 = 316;
+
+#[cfg(target_os = "macos")]
+const MOD_CMD: &str = "Cmd";
+#[cfg(not(target_os = "macos"))]
+const MOD_CMD: &str = "Ctrl";
+
+#[cfg(target_os = "macos")]
+const MOD_ALT: &str = "Option";
+#[cfg(not(target_os = "macos"))]
+const MOD_ALT: &str = "Alt";
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 enum PlaybackStatus {
@@ -33,6 +72,23 @@ struct GlobalPlayback {
     refresh_requested: bool,
 }
 
+struct ArticleMenuState {
+    dirty: bool,
+    loading_urls: HashSet<String>,
+}
+
+struct PodcastMenuState {
+    dirty: bool,
+    loading_urls: HashSet<String>,
+}
+
+struct PodcastPlaybackState {
+    player: Option<podcast_player::PodcastPlayer>,
+    selected_episode: Option<podcasts::PodcastEpisode>,
+    current_audio_url: String,
+    status: PlaybackStatus,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct Settings {
     language: String,
@@ -40,22 +96,31 @@ struct Settings {
     rate: i32,
     pitch: i32,
     volume: i32,
+    #[serde(default = "articles::default_italian_sources")]
+    article_sources: Vec<articles::ArticleSource>,
+    #[serde(default)]
+    podcast_sources: Vec<podcasts::PodcastSource>,
 }
 
 impl Settings {
     fn load() -> Self {
         if let Ok(data) = std::fs::read_to_string("settings.json")
-            && let Ok(settings) = serde_json::from_str(&data)
+            && let Ok(mut settings) = serde_json::from_str::<Settings>(&data)
         {
+            normalize_article_sources(&mut settings);
             return settings;
         }
-        Settings {
+        let mut settings = Settings {
             language: "Italiano".to_string(),
             voice: "".to_string(),
             rate: 0,
             pitch: 0,
             volume: 100,
-        }
+            article_sources: articles::default_italian_sources(),
+            podcast_sources: Vec::new(),
+        };
+        normalize_article_sources(&mut settings);
+        settings
     }
 
     fn save(&self) {
@@ -68,16 +133,74 @@ impl Settings {
 fn get_language_name(locale: &str) -> String {
     let base = locale.split('-').next().unwrap_or(locale).to_lowercase();
     match base.as_str() {
+        "af" => "Afrikaans".to_string(),
+        "am" => "Amarico".to_string(),
+        "ar" => "Arabo".to_string(),
+        "az" => "Azero".to_string(),
+        "bg" => "Bulgaro".to_string(),
+        "bn" => "Bengalese".to_string(),
+        "bs" => "Bosniaco".to_string(),
+        "ca" => "Catalano".to_string(),
+        "cs" => "Ceco".to_string(),
+        "cy" => "Gallese".to_string(),
+        "da" => "Danese".to_string(),
         "it" => "Italiano".to_string(),
         "en" => "Inglese".to_string(),
         "fr" => "Francese".to_string(),
         "es" => "Spagnolo".to_string(),
         "de" => "Tedesco".to_string(),
+        "el" => "Greco".to_string(),
+        "et" => "Estone".to_string(),
+        "fa" => "Persiano".to_string(),
+        "fi" => "Finlandese".to_string(),
+        "ga" => "Irlandese".to_string(),
+        "gu" => "Gujarati".to_string(),
+        "he" => "Ebraico".to_string(),
+        "hi" => "Hindi".to_string(),
+        "hr" => "Croato".to_string(),
+        "hu" => "Ungherese".to_string(),
+        "hy" => "Armeno".to_string(),
+        "id" => "Indonesiano".to_string(),
+        "is" => "Islandese".to_string(),
         "pt" => "Portoghese".to_string(),
+        "kk" => "Kazako".to_string(),
+        "km" => "Khmer".to_string(),
+        "kn" => "Kannada".to_string(),
+        "ko" => "Coreano".to_string(),
+        "lo" => "Lao".to_string(),
+        "lt" => "Lituano".to_string(),
+        "lv" => "Lettone".to_string(),
+        "mk" => "Macedone".to_string(),
+        "ml" => "Malayalam".to_string(),
+        "mn" => "Mongolo".to_string(),
+        "mr" => "Marathi".to_string(),
+        "ms" => "Malese".to_string(),
+        "mt" => "Maltese".to_string(),
+        "my" => "Birmano".to_string(),
+        "nb" | "no" => "Norvegese".to_string(),
+        "ne" => "Nepalese".to_string(),
+        "nl" => "Olandese".to_string(),
+        "pa" => "Punjabi".to_string(),
         "pl" => "Polacco".to_string(),
+        "ro" => "Rumeno".to_string(),
         "ru" => "Russo".to_string(),
+        "sk" => "Slovacco".to_string(),
+        "sl" => "Sloveno".to_string(),
+        "sq" => "Albanese".to_string(),
+        "sr" => "Serbo".to_string(),
+        "sv" => "Svedese".to_string(),
+        "sw" => "Swahili".to_string(),
+        "ta" => "Tamil".to_string(),
+        "te" => "Telugu".to_string(),
+        "th" => "Thailandese".to_string(),
+        "tr" => "Turco".to_string(),
+        "uk" => "Ucraino".to_string(),
+        "ur" => "Urdu".to_string(),
+        "uz" => "Uzbeco".to_string(),
+        "vi" => "Vietnamita".to_string(),
         "zh" => "Cinese".to_string(),
         "ja" => "Giapponese".to_string(),
+        "zu" => "Zulu".to_string(),
         _ => locale.to_string(),
     }
 }
@@ -117,16 +240,1645 @@ fn nearest_preset_index(presets: &[(&str, i32)], value: i32) -> usize {
         .unwrap_or(0)
 }
 
+fn play_button_label(status: PlaybackStatus, podcast_mode: bool) -> String {
+    if podcast_mode {
+        match status {
+            PlaybackStatus::Stopped => format!("Riproduci Podcast ({}+L)", MOD_CMD),
+            PlaybackStatus::Playing => format!("Pausa Podcast ({}+L)", MOD_CMD),
+            PlaybackStatus::Paused => format!("Riprendi Podcast ({}+L)", MOD_CMD),
+        }
+    } else {
+        match status {
+            PlaybackStatus::Stopped => format!("Avvia Lettura ({}+L)", MOD_CMD),
+            PlaybackStatus::Playing => format!("Pausa Lettura ({}+L)", MOD_CMD),
+            PlaybackStatus::Paused => format!("Riprendi Lettura ({}+L)", MOD_CMD),
+        }
+    }
+}
+
+fn save_button_label() -> String {
+    format!("Salva Audiolibro ({}+{}+A)", MOD_CMD, MOD_ALT)
+}
+
+fn stop_button_label(podcast_mode: bool) -> String {
+    if podcast_mode {
+        format!("Ferma Podcast ({}+.)", MOD_CMD)
+    } else {
+        format!("Ferma Lettura ({}+.)", MOD_CMD)
+    }
+}
+
+fn settings_button_label() -> String {
+    format!("Impostazioni ({}+,)", MOD_CMD)
+}
+
+fn about_title() -> &'static str {
+    "Informazioni sul programma"
+}
+
+fn about_message() -> String {
+    format!(
+        "Sonarpad Minimal è una versione essenziale di Sonarpad con supporto multi-formato. \
+Apre file TXT, PDF, DOC, DOCX, EPUB, RTF, HTML e fogli di calcolo; legge il testo con sintesi vocale, \
+crea audiolibri MP3, importa articoli e podcast e supporta la riproduzione dei podcast. \
+Versione: {}. Autore: Ambrogio Riili.",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+fn donations_title() -> &'static str {
+    "Donazioni"
+}
+
+fn donations_message() -> &'static str {
+    include_str!("../donations_it.txt")
+}
+
+fn open_donations_dialog(parent: &Frame) {
+    let dialog = Dialog::builder(parent, donations_title())
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(640, 520)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let text = TextCtrl::builder(&panel)
+        .with_style(TextCtrlStyle::MultiLine | TextCtrlStyle::ReadOnly)
+        .build();
+    text.set_value(donations_message());
+    root.add(&text, 1, SizerFlag::Expand | SizerFlag::All, 8);
+
+    let button_row = BoxSizer::builder(Orientation::Horizontal).build();
+    let btn_ok = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    button_row.add_spacer(1);
+    button_row.add(&btn_ok, 0, SizerFlag::All, 10);
+    root.add_sizer(&button_row, 0, SizerFlag::Expand, 0);
+
+    panel.set_sizer(root, true);
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    btn_ok.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+    dialog.show_modal();
+    dialog.destroy();
+}
+
+fn percent_encode(input: &str) -> String {
+    url::form_urlencoded::byte_serialize(input.as_bytes()).collect()
+}
+
+fn build_google_news_rss_url(keyword: &str) -> String {
+    let query = percent_encode(keyword.trim());
+    format!("https://news.google.com/rss/search?q={query}&hl=it&gl=IT&ceid=IT:it")
+}
+
+fn format_google_news_source_title(keyword: &str) -> String {
+    keyword
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            if let Some(first) = chars.next() {
+                let mut out = String::new();
+                out.extend(first.to_uppercase());
+                for ch in chars {
+                    out.extend(ch.to_lowercase());
+                }
+                out
+            } else {
+                String::new()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn looks_like_article_source_url(input: &str) -> bool {
+    let trimmed = input.trim();
+    trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("www.")
+        || trimmed.starts_with("//")
+        || trimmed.contains('/')
+        || trimmed.contains('.')
+}
+
+fn articles_source_menu_id(source_index: usize) -> i32 {
+    ID_ARTICLES_SOURCE_BASE + source_index as i32
+}
+
+fn articles_article_menu_id(source_index: usize, item_index: usize) -> i32 {
+    ID_ARTICLES_ARTICLE_BASE
+        + (source_index as i32 * MAX_MENU_ARTICLES_PER_SOURCE as i32)
+        + item_index as i32
+}
+
+fn decode_article_menu_id(menu_id: i32) -> Option<(usize, usize)> {
+    if menu_id < ID_ARTICLES_ARTICLE_BASE {
+        return None;
+    }
+    let offset = (menu_id - ID_ARTICLES_ARTICLE_BASE) as usize;
+    let source_index = offset / MAX_MENU_ARTICLES_PER_SOURCE;
+    let item_index = offset % MAX_MENU_ARTICLES_PER_SOURCE;
+    Some((source_index, item_index))
+}
+
+fn podcasts_source_menu_id(source_index: usize) -> i32 {
+    ID_PODCASTS_SOURCE_BASE + source_index as i32
+}
+
+fn podcasts_episode_menu_id(source_index: usize, episode_index: usize) -> i32 {
+    ID_PODCASTS_EPISODE_BASE
+        + (source_index as i32 * MAX_MENU_PODCAST_EPISODES_PER_SOURCE as i32)
+        + episode_index as i32
+}
+
+fn decode_podcast_episode_menu_id(menu_id: i32) -> Option<(usize, usize)> {
+    if menu_id < ID_PODCASTS_EPISODE_BASE {
+        return None;
+    }
+    let offset = (menu_id - ID_PODCASTS_EPISODE_BASE) as usize;
+    let source_index = offset / MAX_MENU_PODCAST_EPISODES_PER_SOURCE;
+    let episode_index = offset % MAX_MENU_PODCAST_EPISODES_PER_SOURCE;
+    Some((source_index, episode_index))
+}
+
+fn voices_cache_path() -> PathBuf {
+    PathBuf::from("voices_cache.json")
+}
+
+fn load_cached_voices() -> Option<Vec<edge_tts::VoiceInfo>> {
+    let data = std::fs::read_to_string(voices_cache_path()).ok()?;
+    serde_json::from_str(&data).ok()
+}
+
+fn save_cached_voices(voices: &[edge_tts::VoiceInfo]) {
+    if let Ok(data) = serde_json::to_string_pretty(voices)
+        && let Err(err) = std::fs::write(voices_cache_path(), data)
+    {
+        println!("ERROR: Salvataggio cache voci fallito: {}", err);
+    }
+}
+
+fn build_language_list(voices: &[edge_tts::VoiceInfo]) -> Vec<(String, String)> {
+    let mut l_map = BTreeMap::new();
+    for voice in voices {
+        l_map.insert(get_language_name(&voice.locale), voice.locale.clone());
+    }
+    l_map.into_iter().collect()
+}
+
+fn normalize_article_sources(settings: &mut Settings) {
+    if settings.article_sources.is_empty() {
+        settings.article_sources = articles::default_italian_sources();
+    }
+    for source in &mut settings.article_sources {
+        source.url = articles::normalize_url(&source.url);
+        if source.title.trim().is_empty() {
+            source.title = source.url.clone();
+        }
+    }
+    for source in &mut settings.podcast_sources {
+        source.url = podcasts::normalize_url(&source.url);
+        if source.title.trim().is_empty() {
+            source.title = source.url.clone();
+        }
+    }
+}
+
+fn rebuild_articles_menu(
+    articles_menu: &Menu,
+    settings: &Arc<Mutex<Settings>>,
+    loading_urls: &HashSet<String>,
+) {
+    for item in articles_menu.get_menu_items().into_iter().rev() {
+        let _ = articles_menu.delete_item(&item);
+    }
+
+    let _ = articles_menu.append(
+        ID_ARTICLES_ADD_SOURCE,
+        "Aggiungi fonte...",
+        "Aggiungi un feed RSS o una fonte",
+        ItemKind::Normal,
+    );
+    let _ = articles_menu.append(
+        ID_ARTICLES_EDIT_SOURCE,
+        "Modifica fonte...",
+        "Modifica una fonte RSS salvata",
+        ItemKind::Normal,
+    );
+    let _ = articles_menu.append(
+        ID_ARTICLES_DELETE_SOURCE,
+        "Elimina fonte...",
+        "Elimina una fonte RSS salvata",
+        ItemKind::Normal,
+    );
+    let _ = articles_menu.append(
+        ID_ARTICLES_REORDER_SOURCES,
+        "Riordina fonti...",
+        "Riordina le fonti RSS salvate",
+        ItemKind::Normal,
+    );
+    articles_menu.append_separator();
+
+    let sources = settings.lock().unwrap().article_sources.clone();
+    for (source_index, source) in sources.iter().enumerate() {
+        let submenu = Menu::builder().build();
+        if source.items.is_empty() {
+            let placeholder_id = articles_source_menu_id(source_index);
+            let placeholder_label = if loading_urls.contains(&source.url) {
+                "Caricamento articoli..."
+            } else {
+                "Nessun articolo disponibile"
+            };
+            let placeholder_help = if loading_urls.contains(&source.url) {
+                "Attendere il caricamento degli articoli"
+            } else {
+                "Aggiorna la fonte per ottenere gli articoli"
+            };
+            let _ = submenu.append(
+                placeholder_id,
+                placeholder_label,
+                placeholder_help,
+                ItemKind::Normal,
+            );
+            let _ = submenu.enable_item(placeholder_id, false);
+        } else {
+            for (item_index, item) in source
+                .items
+                .iter()
+                .take(MAX_MENU_ARTICLES_PER_SOURCE)
+                .enumerate()
+            {
+                let _ = submenu.append(
+                    articles_article_menu_id(source_index, item_index),
+                    &item.title,
+                    &item.link,
+                    ItemKind::Normal,
+                );
+            }
+        }
+        let _ = articles_menu.append_submenu(submenu, &source.title, &source.url);
+    }
+}
+
+fn rebuild_podcasts_menu(
+    podcasts_menu: &Menu,
+    settings: &Arc<Mutex<Settings>>,
+    loading_urls: &HashSet<String>,
+) {
+    for item in podcasts_menu.get_menu_items().into_iter().rev() {
+        let _ = podcasts_menu.delete_item(&item);
+    }
+
+    let _ = podcasts_menu.append(
+        ID_PODCASTS_ADD,
+        "Aggiungi podcast...",
+        "Aggiungi un podcast cercando per parola chiave",
+        ItemKind::Normal,
+    );
+    let categories_menu = Menu::builder().build();
+    for (index, category) in podcasts::apple_categories_it().iter().enumerate() {
+        let _ = categories_menu.append(
+            ID_PODCASTS_CATEGORY_BASE + index as i32,
+            &category.name,
+            "Sfoglia i podcast della categoria",
+            ItemKind::Normal,
+        );
+    }
+    let _ = podcasts_menu.append_submenu(
+        categories_menu,
+        "Sfoglia per categorie",
+        "Sfoglia podcast per categoria",
+    );
+    let _ = podcasts_menu.append(
+        ID_PODCASTS_DELETE,
+        "Elimina podcast...",
+        "Elimina un podcast salvato",
+        ItemKind::Normal,
+    );
+    podcasts_menu.append_separator();
+
+    let sources = settings.lock().unwrap().podcast_sources.clone();
+    for (source_index, source) in sources.iter().enumerate() {
+        let submenu = Menu::builder().build();
+        if source.episodes.is_empty() {
+            let placeholder_id = podcasts_source_menu_id(source_index);
+            let is_loading = loading_urls.contains(&source.url);
+            let _ = submenu.append(
+                placeholder_id,
+                if is_loading {
+                    "Caricamento episodi..."
+                } else {
+                    "Nessun episodio disponibile"
+                },
+                if is_loading {
+                    "Attendere il caricamento degli episodi"
+                } else {
+                    "Aggiorna il podcast per ottenere episodi"
+                },
+                ItemKind::Normal,
+            );
+            let _ = submenu.enable_item(placeholder_id, false);
+        } else {
+            for (episode_index, episode) in source
+                .episodes
+                .iter()
+                .take(MAX_MENU_PODCAST_EPISODES_PER_SOURCE)
+                .enumerate()
+            {
+                let _ = submenu.append(
+                    podcasts_episode_menu_id(source_index, episode_index),
+                    &episode.title,
+                    &episode.link,
+                    ItemKind::Normal,
+                );
+            }
+        }
+        let _ = podcasts_menu.append_submenu(submenu, &source.title, &source.url);
+    }
+}
+
+fn refresh_all_article_sources(
+    rt: &Arc<Runtime>,
+    settings: &Arc<Mutex<Settings>>,
+    article_menu_state: &Arc<Mutex<ArticleMenuState>>,
+) {
+    let rt_refresh = Arc::clone(rt);
+    let settings_refresh = Arc::clone(settings);
+    let menu_state_refresh = Arc::clone(article_menu_state);
+    std::thread::spawn(move || {
+        let sources = settings_refresh.lock().unwrap().article_sources.clone();
+        let mut updated_sources = Vec::with_capacity(sources.len());
+        let mut changed = false;
+        for source in sources {
+            match rt_refresh.block_on(articles::fetch_source(&source)) {
+                Ok(updated) => {
+                    if updated.items != source.items || updated.title != source.title {
+                        changed = true;
+                    }
+                    updated_sources.push(updated);
+                }
+                Err(err) => {
+                    println!(
+                        "ERROR: Aggiornamento articoli fallito per {}: {}",
+                        source.title, err
+                    );
+                    updated_sources.push(source);
+                }
+            }
+        }
+
+        if changed {
+            let mut locked = settings_refresh.lock().unwrap();
+            locked.article_sources = updated_sources;
+            locked.save();
+            menu_state_refresh.lock().unwrap().dirty = true;
+        }
+    });
+}
+
+fn refresh_single_article_source(
+    source_url: String,
+    rt: &Arc<Runtime>,
+    settings: &Arc<Mutex<Settings>>,
+    article_menu_state: &Arc<Mutex<ArticleMenuState>>,
+) {
+    {
+        let mut state = article_menu_state.lock().unwrap();
+        state.loading_urls.insert(source_url.clone());
+        state.dirty = true;
+    }
+
+    let rt_refresh = Arc::clone(rt);
+    let settings_refresh = Arc::clone(settings);
+    let menu_state_refresh = Arc::clone(article_menu_state);
+    std::thread::spawn(move || {
+        let source = {
+            settings_refresh
+                .lock()
+                .unwrap()
+                .article_sources
+                .iter()
+                .find(|source| source.url.eq_ignore_ascii_case(&source_url))
+                .cloned()
+        };
+
+        if let Some(source) = source {
+            match rt_refresh.block_on(articles::fetch_source(&source)) {
+                Ok(updated) => {
+                    let mut locked = settings_refresh.lock().unwrap();
+                    if let Some(existing) = locked
+                        .article_sources
+                        .iter_mut()
+                        .find(|existing| existing.url.eq_ignore_ascii_case(&source_url))
+                    {
+                        *existing = updated;
+                        locked.save();
+                    }
+                }
+                Err(err) => {
+                    println!(
+                        "ERROR: Aggiornamento articoli fallito per {}: {}",
+                        source.title, err
+                    );
+                }
+            }
+        }
+
+        let mut state = menu_state_refresh.lock().unwrap();
+        state.loading_urls.remove(&source_url);
+        state.dirty = true;
+    });
+}
+
+fn refresh_single_podcast_source(
+    source_url: String,
+    rt: &Arc<Runtime>,
+    settings: &Arc<Mutex<Settings>>,
+    podcast_menu_state: &Arc<Mutex<PodcastMenuState>>,
+) {
+    {
+        let mut state = podcast_menu_state.lock().unwrap();
+        state.loading_urls.insert(source_url.clone());
+        state.dirty = true;
+    }
+
+    let rt_refresh = Arc::clone(rt);
+    let settings_refresh = Arc::clone(settings);
+    let menu_state_refresh = Arc::clone(podcast_menu_state);
+    std::thread::spawn(move || {
+        let source = {
+            settings_refresh
+                .lock()
+                .unwrap()
+                .podcast_sources
+                .iter()
+                .find(|source| source.url.eq_ignore_ascii_case(&source_url))
+                .cloned()
+        };
+
+        if let Some(source) = source {
+            match rt_refresh.block_on(podcasts::fetch_source(&source)) {
+                Ok(updated) => {
+                    let mut locked = settings_refresh.lock().unwrap();
+                    if let Some(existing) = locked
+                        .podcast_sources
+                        .iter_mut()
+                        .find(|existing| existing.url.eq_ignore_ascii_case(&source_url))
+                    {
+                        *existing = updated;
+                        locked.save();
+                    }
+                }
+                Err(err) => {
+                    println!(
+                        "ERROR: Aggiornamento podcast fallito per {}: {}",
+                        source.title, err
+                    );
+                }
+            }
+        }
+
+        let mut state = menu_state_refresh.lock().unwrap();
+        state.loading_urls.remove(&source_url);
+        state.dirty = true;
+    });
+}
+
+fn refresh_all_podcast_sources(
+    rt: &Arc<Runtime>,
+    settings: &Arc<Mutex<Settings>>,
+    podcast_menu_state: &Arc<Mutex<PodcastMenuState>>,
+) {
+    let source_urls = {
+        settings
+            .lock()
+            .unwrap()
+            .podcast_sources
+            .iter()
+            .map(|source| source.url.clone())
+            .collect::<Vec<String>>()
+    };
+
+    for source_url in source_urls {
+        refresh_single_podcast_source(source_url, rt, settings, podcast_menu_state);
+    }
+}
+
+fn add_article_source(
+    title: String,
+    url: String,
+    settings: &Arc<Mutex<Settings>>,
+    article_menu_state: &Arc<Mutex<ArticleMenuState>>,
+    rt: &Arc<Runtime>,
+) {
+    let Some((normalized_url, resolved_title)) = resolve_article_source_input(&title, &url) else {
+        return;
+    };
+
+    {
+        let mut locked = settings.lock().unwrap();
+        if locked
+            .article_sources
+            .iter()
+            .any(|source| source.url.eq_ignore_ascii_case(&normalized_url))
+        {
+            return;
+        }
+        locked.article_sources.push(articles::ArticleSource {
+            title: resolved_title,
+            url: normalized_url.clone(),
+            items: Vec::new(),
+        });
+        locked.save();
+    }
+    refresh_single_article_source(normalized_url, rt, settings, article_menu_state);
+}
+
+fn resolve_article_source_input(title: &str, url: &str) -> Option<(String, String)> {
+    let trimmed_input = url.trim();
+    if trimmed_input.is_empty() {
+        return None;
+    }
+
+    let (normalized_url, resolved_title) = if looks_like_article_source_url(trimmed_input) {
+        let normalized_url = articles::normalize_url(trimmed_input);
+        let resolved_title = if title.trim().is_empty() {
+            normalized_url.clone()
+        } else {
+            title.trim().to_string()
+        };
+        (normalized_url, resolved_title)
+    } else {
+        let resolved_title = if title.trim().is_empty() {
+            format_google_news_source_title(trimmed_input)
+        } else {
+            title.trim().to_string()
+        };
+        (build_google_news_rss_url(trimmed_input), resolved_title)
+    };
+
+    if normalized_url.is_empty() {
+        None
+    } else {
+        Some((normalized_url, resolved_title))
+    }
+}
+
+fn edit_article_source(
+    source_index: usize,
+    title: String,
+    url: String,
+    settings: &Arc<Mutex<Settings>>,
+    article_menu_state: &Arc<Mutex<ArticleMenuState>>,
+    rt: &Arc<Runtime>,
+) {
+    let Some((normalized_url, resolved_title)) = resolve_article_source_input(&title, &url) else {
+        return;
+    };
+
+    {
+        let mut locked = settings.lock().unwrap();
+        if source_index >= locked.article_sources.len() {
+            return;
+        }
+        if locked
+            .article_sources
+            .iter()
+            .enumerate()
+            .any(|(index, source)| {
+                index != source_index && source.url.eq_ignore_ascii_case(&normalized_url)
+            })
+        {
+            return;
+        }
+        let source = &mut locked.article_sources[source_index];
+        source.title = resolved_title;
+        source.url = normalized_url.clone();
+        source.items.clear();
+        locked.save();
+    }
+
+    refresh_single_article_source(normalized_url, rt, settings, article_menu_state);
+}
+
+fn delete_article_source(
+    source_index: usize,
+    settings: &Arc<Mutex<Settings>>,
+    article_menu_state: &Arc<Mutex<ArticleMenuState>>,
+) {
+    let mut locked = settings.lock().unwrap();
+    if source_index >= locked.article_sources.len() {
+        return;
+    }
+    locked.article_sources.remove(source_index);
+    locked.save();
+    article_menu_state.lock().unwrap().dirty = true;
+}
+
+fn save_reordered_article_sources(
+    reordered_sources: Vec<articles::ArticleSource>,
+    settings: &Arc<Mutex<Settings>>,
+    article_menu_state: &Arc<Mutex<ArticleMenuState>>,
+) {
+    let mut locked = settings.lock().unwrap();
+    locked.article_sources = reordered_sources;
+    locked.save();
+    article_menu_state.lock().unwrap().dirty = true;
+}
+
+fn add_podcast_source(
+    result: podcasts::PodcastSearchResult,
+    settings: &Arc<Mutex<Settings>>,
+    podcast_menu_state: &Arc<Mutex<PodcastMenuState>>,
+    rt: &Arc<Runtime>,
+) {
+    let normalized_url = podcasts::normalize_url(&result.feed_url);
+    if normalized_url.is_empty() {
+        return;
+    }
+
+    {
+        let mut locked = settings.lock().unwrap();
+        if locked
+            .podcast_sources
+            .iter()
+            .any(|source| source.url.eq_ignore_ascii_case(&normalized_url))
+        {
+            return;
+        }
+        let title = if result.artist.trim().is_empty() {
+            result.title
+        } else {
+            format!("{} - {}", result.title, result.artist)
+        };
+        locked.podcast_sources.push(podcasts::PodcastSource {
+            title,
+            url: normalized_url.clone(),
+            episodes: Vec::new(),
+        });
+        locked.save();
+    }
+
+    refresh_single_podcast_source(normalized_url, rt, settings, podcast_menu_state);
+}
+
+fn delete_podcast_source(
+    source_index: usize,
+    settings: &Arc<Mutex<Settings>>,
+    podcast_menu_state: &Arc<Mutex<PodcastMenuState>>,
+) {
+    let mut locked = settings.lock().unwrap();
+    if source_index >= locked.podcast_sources.len() {
+        return;
+    }
+    locked.podcast_sources.remove(source_index);
+    locked.save();
+    podcast_menu_state.lock().unwrap().dirty = true;
+}
+
+fn open_add_podcast_dialog(
+    parent: &Frame,
+    rt: &Arc<Runtime>,
+) -> Option<podcasts::PodcastSearchResult> {
+    let dialog = Dialog::builder(parent, "Aggiungi podcast")
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(560, 180)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let keyword_row = BoxSizer::builder(Orientation::Horizontal).build();
+    keyword_row.add(
+        &StaticText::builder(&panel)
+            .with_label("Parola chiave:")
+            .build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let keyword_ctrl = TextCtrl::builder(&panel).build();
+    keyword_row.add(&keyword_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&keyword_row, 0, SizerFlag::Expand, 0);
+
+    let buttons = BoxSizer::builder(Orientation::Horizontal).build();
+    let ok_button = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    buttons.add_spacer(1);
+    buttons.add(&ok_button, 0, SizerFlag::All, 10);
+    root.add_sizer(&buttons, 0, SizerFlag::Expand, 0);
+    panel.set_sizer(root, true);
+
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    ok_button.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+
+    let result = if dialog.show_modal() == ID_OK {
+        let keyword = keyword_ctrl.get_value();
+        if keyword.trim().is_empty() {
+            None
+        } else {
+            open_podcast_search_results_dialog(parent, rt, &keyword)
+        }
+    } else {
+        None
+    };
+
+    dialog.destroy();
+    result
+}
+
+fn open_podcast_search_results_dialog(
+    parent: &Frame,
+    rt: &Arc<Runtime>,
+    keyword: &str,
+) -> Option<podcasts::PodcastSearchResult> {
+    let results = rt
+        .block_on(podcasts::search_itunes_podcasts(keyword))
+        .ok()?;
+    open_podcast_results_dialog(parent, "Scegli podcast", &results)
+}
+
+fn open_podcast_category_results_dialog(
+    parent: &Frame,
+    rt: &Arc<Runtime>,
+    category: &podcasts::PodcastCategory,
+) -> Option<podcasts::PodcastSearchResult> {
+    let results = rt
+        .block_on(podcasts::search_itunes_category(category.id))
+        .ok()?;
+    open_podcast_results_dialog(parent, &format!("Categoria: {}", category.name), &results)
+}
+
+fn open_podcast_results_dialog(
+    parent: &Frame,
+    title: &str,
+    results: &[podcasts::PodcastSearchResult],
+) -> Option<podcasts::PodcastSearchResult> {
+    if results.is_empty() {
+        return None;
+    }
+
+    let dialog = Dialog::builder(parent, title)
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(620, 180)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let result_row = BoxSizer::builder(Orientation::Horizontal).build();
+    result_row.add(
+        &StaticText::builder(&panel).with_label("Podcast:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_result = Choice::builder(&panel).build();
+    for result in results {
+        let label = if result.artist.trim().is_empty() {
+            result.title.clone()
+        } else {
+            format!("{} - {}", result.title, result.artist)
+        };
+        choice_result.append(&label);
+    }
+    choice_result.set_selection(0);
+    result_row.add(&choice_result, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&result_row, 0, SizerFlag::Expand, 0);
+
+    let buttons = BoxSizer::builder(Orientation::Horizontal).build();
+    let ok_button = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    buttons.add_spacer(1);
+    buttons.add(&ok_button, 0, SizerFlag::All, 10);
+    root.add_sizer(&buttons, 0, SizerFlag::Expand, 0);
+    panel.set_sizer(root, true);
+
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    ok_button.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+
+    let result = if dialog.show_modal() == ID_OK {
+        choice_result
+            .get_selection()
+            .and_then(|selection| results.get(selection as usize).cloned())
+    } else {
+        None
+    };
+
+    dialog.destroy();
+    result
+}
+
+fn open_delete_podcast_dialog(parent: &Frame, settings: &Arc<Mutex<Settings>>) -> Option<usize> {
+    let sources = settings.lock().unwrap().podcast_sources.clone();
+    if sources.is_empty() {
+        return None;
+    }
+
+    let dialog = Dialog::builder(parent, "Elimina podcast")
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(520, 160)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let row = BoxSizer::builder(Orientation::Horizontal).build();
+    row.add(
+        &StaticText::builder(&panel).with_label("Podcast:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_source = Choice::builder(&panel).build();
+    for source in &sources {
+        choice_source.append(&source.title);
+    }
+    choice_source.set_selection(0);
+    row.add(&choice_source, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&row, 0, SizerFlag::Expand, 0);
+
+    let selected_index = Rc::new(RefCell::new(0usize));
+    let choice_source_evt = choice_source;
+    let selected_index_evt = Rc::clone(&selected_index);
+    choice_source.on_selection_changed(move |_| {
+        if let Some(selection) = choice_source_evt.get_selection() {
+            *selected_index_evt.borrow_mut() = selection as usize;
+        }
+    });
+
+    let buttons = BoxSizer::builder(Orientation::Horizontal).build();
+    let ok_button = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    buttons.add_spacer(1);
+    buttons.add(&ok_button, 0, SizerFlag::All, 10);
+    root.add_sizer(&buttons, 0, SizerFlag::Expand, 0);
+    panel.set_sizer(root, true);
+
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    ok_button.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+
+    let result = if dialog.show_modal() == ID_OK {
+        Some(*selected_index.borrow())
+    } else {
+        None
+    };
+
+    dialog.destroy();
+    result
+}
+
+fn open_add_article_source_dialog(parent: &Frame) -> Option<(String, String)> {
+    let dialog = Dialog::builder(parent, "Aggiungi fonte")
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(520, 180)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let title_row = BoxSizer::builder(Orientation::Horizontal).build();
+    title_row.add(
+        &StaticText::builder(&panel).with_label("Titolo:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let title_ctrl = TextCtrl::builder(&panel).build();
+    title_row.add(&title_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&title_row, 0, SizerFlag::Expand, 0);
+
+    let url_row = BoxSizer::builder(Orientation::Horizontal).build();
+    url_row.add(
+        &StaticText::builder(&panel)
+            .with_label("URL o fonte:")
+            .build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let url_ctrl = TextCtrl::builder(&panel).build();
+    url_row.add(&url_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&url_row, 0, SizerFlag::Expand, 0);
+
+    let buttons = BoxSizer::builder(Orientation::Horizontal).build();
+    let ok_button = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    buttons.add_spacer(1);
+    buttons.add(&ok_button, 0, SizerFlag::All, 10);
+    root.add_sizer(&buttons, 0, SizerFlag::Expand, 0);
+    panel.set_sizer(root, true);
+
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    ok_button.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+
+    let result = if dialog.show_modal() == ID_OK {
+        let title = title_ctrl.get_value();
+        let url = url_ctrl.get_value();
+        if url.trim().is_empty() {
+            None
+        } else {
+            Some((title, url))
+        }
+    } else {
+        None
+    };
+
+    dialog.destroy();
+    result
+}
+
+fn open_edit_article_source_dialog(
+    parent: &Frame,
+    settings: &Arc<Mutex<Settings>>,
+) -> Option<(usize, String, String)> {
+    let sources = settings.lock().unwrap().article_sources.clone();
+    if sources.is_empty() {
+        return None;
+    }
+
+    let dialog = Dialog::builder(parent, "Modifica fonte")
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(560, 220)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let source_row = BoxSizer::builder(Orientation::Horizontal).build();
+    source_row.add(
+        &StaticText::builder(&panel).with_label("Fonte:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_source = Choice::builder(&panel).build();
+    for source in &sources {
+        let label = if source.title.trim().is_empty() {
+            source.url.clone()
+        } else {
+            source.title.clone()
+        };
+        choice_source.append(&label);
+    }
+    choice_source.set_selection(0);
+    source_row.add(&choice_source, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&source_row, 0, SizerFlag::Expand, 0);
+
+    let title_row = BoxSizer::builder(Orientation::Horizontal).build();
+    title_row.add(
+        &StaticText::builder(&panel).with_label("Titolo:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let title_ctrl = TextCtrl::builder(&panel).build();
+    title_row.add(&title_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&title_row, 0, SizerFlag::Expand, 0);
+
+    let url_row = BoxSizer::builder(Orientation::Horizontal).build();
+    url_row.add(
+        &StaticText::builder(&panel)
+            .with_label("URL o fonte:")
+            .build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let url_ctrl = TextCtrl::builder(&panel).build();
+    url_row.add(&url_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&url_row, 0, SizerFlag::Expand, 0);
+
+    let selected_index = Rc::new(RefCell::new(0usize));
+    if let Some(source) = sources.first() {
+        title_ctrl.set_value(&source.title);
+        url_ctrl.set_value(&source.url);
+    }
+
+    let title_ctrl_evt = title_ctrl;
+    let url_ctrl_evt = url_ctrl;
+    let choice_source_evt = choice_source;
+    let sources_evt = sources.clone();
+    let selected_index_evt = Rc::clone(&selected_index);
+    choice_source.on_selection_changed(move |_| {
+        if let Some(selection) = choice_source_evt.get_selection() {
+            let selection = selection as usize;
+            *selected_index_evt.borrow_mut() = selection;
+            if let Some(source) = sources_evt.get(selection) {
+                title_ctrl_evt.set_value(&source.title);
+                url_ctrl_evt.set_value(&source.url);
+            }
+        }
+    });
+
+    let buttons = BoxSizer::builder(Orientation::Horizontal).build();
+    let ok_button = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    buttons.add_spacer(1);
+    buttons.add(&ok_button, 0, SizerFlag::All, 10);
+    root.add_sizer(&buttons, 0, SizerFlag::Expand, 0);
+    panel.set_sizer(root, true);
+
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    ok_button.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+
+    let result = if dialog.show_modal() == ID_OK {
+        let url = url_ctrl.get_value();
+        if url.trim().is_empty() {
+            None
+        } else {
+            Some((*selected_index.borrow(), title_ctrl.get_value(), url))
+        }
+    } else {
+        None
+    };
+
+    dialog.destroy();
+    result
+}
+
+fn open_delete_article_source_dialog(
+    parent: &Frame,
+    settings: &Arc<Mutex<Settings>>,
+) -> Option<usize> {
+    let sources = settings.lock().unwrap().article_sources.clone();
+    if sources.is_empty() {
+        return None;
+    }
+
+    let dialog = Dialog::builder(parent, "Elimina fonte")
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(520, 160)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let source_row = BoxSizer::builder(Orientation::Horizontal).build();
+    source_row.add(
+        &StaticText::builder(&panel).with_label("Fonte:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_source = Choice::builder(&panel).build();
+    for source in &sources {
+        let label = if source.title.trim().is_empty() {
+            source.url.clone()
+        } else {
+            source.title.clone()
+        };
+        choice_source.append(&label);
+    }
+    choice_source.set_selection(0);
+    source_row.add(&choice_source, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&source_row, 0, SizerFlag::Expand, 0);
+
+    let selected_index = Rc::new(RefCell::new(0usize));
+    let choice_source_evt = choice_source;
+    let selected_index_evt = Rc::clone(&selected_index);
+    choice_source.on_selection_changed(move |_| {
+        if let Some(selection) = choice_source_evt.get_selection() {
+            *selected_index_evt.borrow_mut() = selection as usize;
+        }
+    });
+
+    let buttons = BoxSizer::builder(Orientation::Horizontal).build();
+    let ok_button = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    buttons.add_spacer(1);
+    buttons.add(&ok_button, 0, SizerFlag::All, 10);
+    root.add_sizer(&buttons, 0, SizerFlag::Expand, 0);
+    panel.set_sizer(root, true);
+
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    ok_button.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+
+    let result = if dialog.show_modal() == ID_OK {
+        Some(*selected_index.borrow())
+    } else {
+        None
+    };
+
+    dialog.destroy();
+    result
+}
+
+fn open_reorder_article_sources_dialog(
+    parent: &Frame,
+    settings: &Arc<Mutex<Settings>>,
+) -> Option<Vec<articles::ArticleSource>> {
+    let sources = settings.lock().unwrap().article_sources.clone();
+    if sources.len() < 2 {
+        return None;
+    }
+
+    let dialog = Dialog::builder(parent, "Riordina fonti")
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(560, 220)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let working_sources = Rc::new(RefCell::new(sources));
+
+    let source_row = BoxSizer::builder(Orientation::Horizontal).build();
+    source_row.add(
+        &StaticText::builder(&panel).with_label("Fonte:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_source = Choice::builder(&panel).build();
+    source_row.add(&choice_source, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&source_row, 0, SizerFlag::Expand, 0);
+
+    let action_row = BoxSizer::builder(Orientation::Horizontal).build();
+    let move_up_button = Button::builder(&panel).with_label("Sposta su").build();
+    let move_down_button = Button::builder(&panel).with_label("Sposta giù").build();
+    action_row.add(&move_up_button, 1, SizerFlag::All, 5);
+    action_row.add(&move_down_button, 1, SizerFlag::All, 5);
+    root.add_sizer(&action_row, 0, SizerFlag::Expand, 0);
+
+    let buttons = BoxSizer::builder(Orientation::Horizontal).build();
+    let ok_button = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    buttons.add_spacer(1);
+    buttons.add(&ok_button, 0, SizerFlag::All, 10);
+    root.add_sizer(&buttons, 0, SizerFlag::Expand, 0);
+    panel.set_sizer(root, true);
+
+    let refresh_choice = Rc::new({
+        let working_sources = Rc::clone(&working_sources);
+        move |choice: &Choice, selected_index: usize| {
+            choice.clear();
+            let current_sources = working_sources.borrow();
+            for source in current_sources.iter() {
+                let label = if source.title.trim().is_empty() {
+                    source.url.clone()
+                } else {
+                    source.title.clone()
+                };
+                choice.append(&label);
+            }
+            let max_index = current_sources.len().saturating_sub(1);
+            choice.set_selection(selected_index.min(max_index) as u32);
+        }
+    });
+
+    refresh_choice(&choice_source, 0);
+
+    let selected_index = Rc::new(RefCell::new(0usize));
+
+    let choice_source_evt = choice_source;
+    let selected_index_evt = Rc::clone(&selected_index);
+    choice_source.on_selection_changed(move |_| {
+        if let Some(selection) = choice_source_evt.get_selection() {
+            *selected_index_evt.borrow_mut() = selection as usize;
+        }
+    });
+
+    let choice_source_up = choice_source;
+    let selected_index_up = Rc::clone(&selected_index);
+    let working_sources_up = Rc::clone(&working_sources);
+    let refresh_choice_up = Rc::clone(&refresh_choice);
+    move_up_button.on_click(move |_| {
+        let current_index = *selected_index_up.borrow();
+        if current_index == 0 {
+            return;
+        }
+        {
+            let mut sources = working_sources_up.borrow_mut();
+            sources.swap(current_index, current_index - 1);
+        }
+        let new_index = current_index - 1;
+        *selected_index_up.borrow_mut() = new_index;
+        refresh_choice_up(&choice_source_up, new_index);
+    });
+
+    let choice_source_down = choice_source;
+    let selected_index_down = Rc::clone(&selected_index);
+    let working_sources_down = Rc::clone(&working_sources);
+    let refresh_choice_down = Rc::clone(&refresh_choice);
+    move_down_button.on_click(move |_| {
+        let current_index = *selected_index_down.borrow();
+        let len = working_sources_down.borrow().len();
+        if current_index + 1 >= len {
+            return;
+        }
+        {
+            let mut sources = working_sources_down.borrow_mut();
+            sources.swap(current_index, current_index + 1);
+        }
+        let new_index = current_index + 1;
+        *selected_index_down.borrow_mut() = new_index;
+        refresh_choice_down(&choice_source_down, new_index);
+    });
+
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    ok_button.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+
+    let result = if dialog.show_modal() == ID_OK {
+        Some(working_sources.borrow().clone())
+    } else {
+        None
+    };
+
+    dialog.destroy();
+    result
+}
+
+fn apply_loaded_voices(
+    settings: &Arc<Mutex<Settings>>,
+    voices_data: &Arc<Mutex<Vec<edge_tts::VoiceInfo>>>,
+    languages: &Arc<Mutex<Vec<(String, String)>>>,
+    voices: Vec<edge_tts::VoiceInfo>,
+) {
+    let language_list = build_language_list(&voices);
+    {
+        let mut v_lock = voices_data.lock().unwrap();
+        *v_lock = voices;
+    }
+    {
+        let mut l_lock = languages.lock().unwrap();
+        *l_lock = language_list.clone();
+    }
+    sync_settings_with_loaded_voices(settings, &voices_data.lock().unwrap(), &language_list);
+}
+
+fn refresh_playback_if_needed(playback: &Arc<Mutex<GlobalPlayback>>) {
+    let mut pb = playback.lock().unwrap();
+    if pb.status == PlaybackStatus::Playing {
+        pb.refresh_requested = true;
+        if let Some(ref sink) = pb.sink {
+            sink.stop();
+        }
+    }
+}
+
+fn stop_tts_playback(playback: &Arc<Mutex<GlobalPlayback>>) {
+    let mut pb = playback.lock().unwrap();
+    if let Some(ref sink) = pb.sink {
+        sink.stop();
+    }
+    pb.sink = None;
+    pb.status = PlaybackStatus::Stopped;
+    pb.refresh_requested = false;
+    pb.download_finished = false;
+}
+
+fn stop_podcast_playback(state: &Rc<RefCell<PodcastPlaybackState>>) {
+    let mut podcast_state = state.borrow_mut();
+    if let Some(player) = podcast_state.player.as_ref()
+        && let Err(err) = player.pause()
+    {
+        println!("ERROR: Pausa podcast fallita: {}", err);
+    }
+    podcast_state.player = None;
+    podcast_state.status = PlaybackStatus::Stopped;
+}
+
+fn seek_podcast_playback(state: &Rc<RefCell<PodcastPlaybackState>>, offset_seconds: f64) {
+    let podcast_state = state.borrow();
+    if let Some(player) = podcast_state.player.as_ref()
+        && let Err(err) = player.seek_by_seconds(offset_seconds)
+    {
+        println!("ERROR: Seek podcast fallito: {}", err);
+    }
+}
+
+fn sync_settings_with_loaded_voices(
+    settings: &Arc<Mutex<Settings>>,
+    voices: &[edge_tts::VoiceInfo],
+    languages: &[(String, String)],
+) {
+    if languages.is_empty() {
+        return;
+    }
+
+    let mut changed = false;
+    let mut s = settings.lock().unwrap();
+
+    if !languages.iter().any(|(name, _)| name == &s.language) {
+        if languages.iter().any(|(name, _)| name == "Italiano") {
+            s.language = "Italiano".to_string();
+        } else if let Some((name, _)) = languages.first() {
+            s.language = name.clone();
+        }
+        changed = true;
+    }
+
+    let locale = languages
+        .iter()
+        .find(|(name, _)| name == &s.language)
+        .map(|(_, locale)| locale.clone());
+    if let Some(locale) = locale {
+        let available_voices: Vec<_> = voices.iter().filter(|v| v.locale == locale).collect();
+        if !available_voices
+            .iter()
+            .any(|voice| voice.short_name == s.voice)
+            && let Some(voice) = available_voices.first()
+        {
+            s.voice = voice.short_name.clone();
+            changed = true;
+        }
+    }
+
+    if changed {
+        s.save();
+    }
+}
+
+fn open_settings_dialog(
+    parent: &Frame,
+    settings: &Arc<Mutex<Settings>>,
+    voices_data: &Arc<Mutex<Vec<edge_tts::VoiceInfo>>>,
+    languages: &Arc<Mutex<Vec<(String, String)>>>,
+    playback: &Arc<Mutex<GlobalPlayback>>,
+) {
+    let settings_before = settings.lock().unwrap().clone();
+    let languages_snapshot = languages.lock().unwrap().clone();
+    let voices_snapshot = voices_data.lock().unwrap().clone();
+
+    let dialog = Dialog::builder(parent, "Impostazioni")
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(560, 320)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let lang_row = BoxSizer::builder(Orientation::Horizontal).build();
+    lang_row.add(
+        &StaticText::builder(&panel).with_label("Lingua:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_lang = Choice::builder(&panel).build();
+    lang_row.add(&choice_lang, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&lang_row, 0, SizerFlag::Expand, 0);
+
+    let voice_row = BoxSizer::builder(Orientation::Horizontal).build();
+    voice_row.add(
+        &StaticText::builder(&panel).with_label("Voce:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_voices = Choice::builder(&panel).build();
+    voice_row.add(&choice_voices, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&voice_row, 0, SizerFlag::Expand, 0);
+
+    let rate_row = BoxSizer::builder(Orientation::Horizontal).build();
+    rate_row.add(
+        &StaticText::builder(&panel).with_label("Velocità:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_rate = Choice::builder(&panel).build();
+    for (label, _) in RATE_PRESETS {
+        choice_rate.append(label);
+    }
+    choice_rate.set_selection(nearest_preset_index(&RATE_PRESETS, settings_before.rate) as u32);
+    rate_row.add(&choice_rate, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&rate_row, 0, SizerFlag::Expand, 0);
+
+    let pitch_row = BoxSizer::builder(Orientation::Horizontal).build();
+    pitch_row.add(
+        &StaticText::builder(&panel).with_label("Tono:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_pitch = Choice::builder(&panel).build();
+    for (label, _) in PITCH_PRESETS {
+        choice_pitch.append(label);
+    }
+    choice_pitch.set_selection(nearest_preset_index(&PITCH_PRESETS, settings_before.pitch) as u32);
+    pitch_row.add(&choice_pitch, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&pitch_row, 0, SizerFlag::Expand, 0);
+
+    let volume_row = BoxSizer::builder(Orientation::Horizontal).build();
+    volume_row.add(
+        &StaticText::builder(&panel).with_label("Volume:").build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_volume = Choice::builder(&panel).build();
+    for (label, _) in VOLUME_PRESETS {
+        choice_volume.append(label);
+    }
+    choice_volume
+        .set_selection(nearest_preset_index(&VOLUME_PRESETS, settings_before.volume) as u32);
+    volume_row.add(&choice_volume, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&volume_row, 0, SizerFlag::Expand, 0);
+
+    let button_row = BoxSizer::builder(Orientation::Horizontal).build();
+    let btn_ok = Button::builder(&panel)
+        .with_id(ID_OK)
+        .with_label("OK")
+        .build();
+    button_row.add_spacer(1);
+    button_row.add(&btn_ok, 0, SizerFlag::All, 10);
+    root.add_sizer(&button_row, 0, SizerFlag::Expand, 0);
+
+    panel.set_sizer(root, true);
+
+    for (name, _) in &languages_snapshot {
+        choice_lang.append(name);
+    }
+    if let Some(pos) = languages_snapshot
+        .iter()
+        .position(|(name, _)| name == &settings_before.language)
+    {
+        choice_lang.set_selection(pos as u32);
+    } else if let Some(pos) = languages_snapshot
+        .iter()
+        .position(|(name, _)| name == "Italiano")
+    {
+        choice_lang.set_selection(pos as u32);
+    } else if !languages_snapshot.is_empty() {
+        choice_lang.set_selection(0);
+    }
+
+    let selected_voice = Rc::new(RefCell::new(settings_before.voice.clone()));
+    let filtered_voices = Rc::new(RefCell::new(Vec::<edge_tts::VoiceInfo>::new()));
+    let filtered_voices_init = Rc::clone(&filtered_voices);
+    let selected_voice_init = Rc::clone(&selected_voice);
+    let choice_voices_fill = choice_voices;
+    let choice_voices_evt = choice_voices;
+    let choice_lang_evt = choice_lang;
+
+    let populate_voices = Rc::new(move |lang_sel: u32| {
+        let locale = languages_snapshot
+            .get(lang_sel as usize)
+            .map(|(_, locale)| locale.clone())
+            .unwrap_or_default();
+        let voice_list: Vec<_> = voices_snapshot
+            .iter()
+            .filter(|voice| voice.locale == locale)
+            .cloned()
+            .collect();
+        choice_voices_fill.clear();
+        for voice in &voice_list {
+            choice_voices_fill.append(&voice.friendly_name);
+        }
+
+        let preferred = selected_voice_init.borrow().clone();
+        if let Some(pos) = voice_list
+            .iter()
+            .position(|voice| voice.short_name == preferred)
+        {
+            choice_voices_fill.set_selection(pos as u32);
+        } else if let Some(first) = voice_list.first() {
+            choice_voices_fill.set_selection(0);
+            *selected_voice_init.borrow_mut() = first.short_name.clone();
+        } else {
+            selected_voice_init.borrow_mut().clear();
+        }
+        *filtered_voices_init.borrow_mut() = voice_list;
+    });
+
+    if let Some(sel) = choice_lang.get_selection() {
+        populate_voices(sel);
+    }
+
+    let populate_voices_evt = Rc::clone(&populate_voices);
+    choice_lang.on_selection_changed(move |_| {
+        if let Some(sel) = choice_lang_evt.get_selection() {
+            populate_voices_evt(sel);
+        }
+    });
+
+    let filtered_voices_choice = Rc::clone(&filtered_voices);
+    let selected_voice_choice = Rc::clone(&selected_voice);
+    choice_voices.on_selection_changed(move |_| {
+        if let Some(sel) = choice_voices_evt.get_selection()
+            && let Some(voice) = filtered_voices_choice.borrow().get(sel as usize)
+        {
+            *selected_voice_choice.borrow_mut() = voice.short_name.clone();
+        }
+    });
+
+    dialog.set_affirmative_id(ID_OK);
+    let dialog_ok = dialog;
+    btn_ok.on_click(move |_| {
+        dialog_ok.end_modal(ID_OK);
+    });
+
+    if dialog.show_modal() == ID_OK {
+        let mut updated = settings_before.clone();
+        if let Some(sel) = choice_lang.get_selection()
+            && let Some((name, _)) = languages.lock().unwrap().get(sel as usize)
+        {
+            updated.language = name.clone();
+        }
+        let chosen_voice = selected_voice.borrow().clone();
+        if !chosen_voice.is_empty() {
+            updated.voice = chosen_voice;
+        }
+        if let Some(sel) = choice_rate.get_selection() {
+            updated.rate = RATE_PRESETS[sel as usize].1;
+        }
+        if let Some(sel) = choice_pitch.get_selection() {
+            updated.pitch = PITCH_PRESETS[sel as usize].1;
+        }
+        if let Some(sel) = choice_volume.get_selection() {
+            updated.volume = VOLUME_PRESETS[sel as usize].1;
+        }
+
+        let refresh_needed = settings_before.voice != updated.voice
+            || settings_before.rate != updated.rate
+            || settings_before.pitch != updated.pitch
+            || settings_before.volume != updated.volume;
+        let changed = settings_before.language != updated.language || refresh_needed;
+
+        if changed {
+            let mut locked = settings.lock().unwrap();
+            *locked = updated;
+            locked.save();
+        }
+        if refresh_needed {
+            refresh_playback_if_needed(playback);
+        }
+    }
+
+    dialog.destroy();
+}
+
 fn main() {
     #[cfg(windows)]
     SystemOptions::set_option_by_int("msw.no-manifest-check", 1);
 
+    #[cfg(target_os = "macos")]
+    {
+        let bundled_curl_libraries = articles::bundled_curl_impersonate_libraries();
+        if bundled_curl_libraries.is_empty() {
+            println!("INFO: Nessuna libreria curl-impersonate rilevata nel bundle macOS");
+        } else {
+            for library in bundled_curl_libraries {
+                println!(
+                    "INFO: Libreria curl-impersonate rilevata nel bundle macOS: {}",
+                    library.display()
+                );
+            }
+        }
+    }
+
     let rt = Arc::new(Runtime::new().unwrap());
     let voices_data = Arc::new(Mutex::new(Vec::<edge_tts::VoiceInfo>::new()));
     let languages = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
-    let filtered_voices = Arc::new(Mutex::new(Vec::<edge_tts::VoiceInfo>::new()));
-
     let settings = Arc::new(Mutex::new(Settings::load()));
+    let article_menu_state = Arc::new(Mutex::new(ArticleMenuState {
+        dirty: true,
+        loading_urls: HashSet::new(),
+    }));
+    let podcast_menu_state = Arc::new(Mutex::new(PodcastMenuState {
+        dirty: true,
+        loading_urls: HashSet::new(),
+    }));
+    let podcast_playback = Rc::new(RefCell::new(PodcastPlaybackState {
+        player: None,
+        selected_episode: None,
+        current_audio_url: String::new(),
+        status: PlaybackStatus::Stopped,
+    }));
 
     let playback = Arc::new(Mutex::new(GlobalPlayback {
         sink: None,
@@ -134,6 +1886,34 @@ fn main() {
         download_finished: false,
         refresh_requested: false,
     }));
+
+    if let Some(cached_voices) = load_cached_voices() {
+        apply_loaded_voices(&settings, &voices_data, &languages, cached_voices);
+    }
+
+    let rt_refresh = Arc::clone(&rt);
+    let settings_refresh = Arc::clone(&settings);
+    let voices_refresh = Arc::clone(&voices_data);
+    let languages_refresh = Arc::clone(&languages);
+    std::thread::spawn(
+        move || match rt_refresh.block_on(edge_tts::get_edge_voices()) {
+            Ok(voices) => {
+                save_cached_voices(&voices);
+                apply_loaded_voices(
+                    &settings_refresh,
+                    &voices_refresh,
+                    &languages_refresh,
+                    voices,
+                );
+            }
+            Err(err) => {
+                println!("ERROR: Aggiornamento voci fallito: {}", err);
+            }
+        },
+    );
+
+    refresh_all_article_sources(&rt, &settings, &article_menu_state);
+    refresh_all_podcast_sources(&rt, &settings, &podcast_menu_state);
 
     let _ = wxdragon::main(move |_| {
         let frame = Frame::builder()
@@ -151,12 +1931,37 @@ fn main() {
         file_menu.append_separator();
         file_menu.append(
             ID_EXIT,
-            "&Esci\tAlt+F4",
+            "&Esci\tCtrl+Q",
             "Esci dal programma",
             ItemKind::Normal,
         );
+        let help_menu = Menu::builder().build();
+        help_menu.append(
+            ID_ABOUT,
+            "&Informazioni sul programma...",
+            "Mostra informazioni sul programma",
+            ItemKind::Normal,
+        );
+        help_menu.append(
+            ID_DONATIONS,
+            "&Donazioni",
+            "Mostra informazioni per sostenere il progetto",
+            ItemKind::Normal,
+        );
 
-        let menubar = MenuBar::builder().append(file_menu, "&File").build();
+        let articles_menu = Menu::builder().build();
+        rebuild_articles_menu(&articles_menu, &settings, &HashSet::new());
+        let articles_menu_timer = Menu::from(articles_menu.as_const_ptr());
+        let podcasts_menu = Menu::builder().build();
+        rebuild_podcasts_menu(&podcasts_menu, &settings, &HashSet::new());
+        let podcasts_menu_timer = Menu::from(podcasts_menu.as_const_ptr());
+
+        let menubar = MenuBar::builder()
+            .append(file_menu, "&File")
+            .append(articles_menu, "&Articoli")
+            .append(podcasts_menu, "&Podcast")
+            .append(help_menu, "&Aiuto")
+            .build();
         frame.set_menu_bar(menubar);
 
         let panel = Panel::builder(&frame).build();
@@ -167,276 +1972,238 @@ fn main() {
             .build();
         main_sizer.add(&text_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 5);
 
-        let filter_sizer = BoxSizer::builder(Orientation::Horizontal).build();
-        filter_sizer.add(
-            &StaticText::builder(&panel).with_label("Lingua:").build(),
-            0,
-            SizerFlag::AlignCenterVertical | SizerFlag::All,
-            5,
-        );
-        let choice_lang = Choice::builder(&panel).build();
-        filter_sizer.add(&choice_lang, 1, SizerFlag::Expand | SizerFlag::All, 5);
-
-        filter_sizer.add(
-            &StaticText::builder(&panel).with_label("Voce:").build(),
-            0,
-            SizerFlag::AlignCenterVertical | SizerFlag::All,
-            5,
-        );
-        let choice_voices = Choice::builder(&panel).build();
-        filter_sizer.add(&choice_voices, 1, SizerFlag::Expand | SizerFlag::All, 5);
-
-        main_sizer.add_sizer(&filter_sizer, 0, SizerFlag::Expand, 0);
-
-        // Presets accessibili (Rate, Pitch, Volume)
-        let slider_sizer = BoxSizer::builder(Orientation::Horizontal).build();
-
-        slider_sizer.add(
-            &StaticText::builder(&panel).with_label("Velocità:").build(),
-            0,
-            SizerFlag::AlignCenterVertical | SizerFlag::All,
-            5,
-        );
-        let choice_rate = Choice::builder(&panel).build();
-        for (label, _) in RATE_PRESETS {
-            choice_rate.append(label);
-        }
-        let initial_rate = settings.lock().unwrap().rate;
-        choice_rate.set_selection(nearest_preset_index(&RATE_PRESETS, initial_rate) as u32);
-        slider_sizer.add(&choice_rate, 1, SizerFlag::Expand | SizerFlag::All, 5);
-
-        slider_sizer.add(
-            &StaticText::builder(&panel).with_label("Tono:").build(),
-            0,
-            SizerFlag::AlignCenterVertical | SizerFlag::All,
-            5,
-        );
-        let choice_pitch = Choice::builder(&panel).build();
-        for (label, _) in PITCH_PRESETS {
-            choice_pitch.append(label);
-        }
-        let initial_pitch = settings.lock().unwrap().pitch;
-        choice_pitch.set_selection(nearest_preset_index(&PITCH_PRESETS, initial_pitch) as u32);
-        slider_sizer.add(&choice_pitch, 1, SizerFlag::Expand | SizerFlag::All, 5);
-
-        slider_sizer.add(
-            &StaticText::builder(&panel).with_label("Volume:").build(),
-            0,
-            SizerFlag::AlignCenterVertical | SizerFlag::All,
-            5,
-        );
-        let choice_volume = Choice::builder(&panel).build();
-        for (label, _) in VOLUME_PRESETS {
-            choice_volume.append(label);
-        }
-        let initial_volume = settings.lock().unwrap().volume;
-        choice_volume.set_selection(nearest_preset_index(&VOLUME_PRESETS, initial_volume) as u32);
-        slider_sizer.add(&choice_volume, 1, SizerFlag::Expand | SizerFlag::All, 5);
-
-        main_sizer.add_sizer(&slider_sizer, 0, SizerFlag::Expand, 0);
-
         let btn_sizer = BoxSizer::builder(Orientation::Horizontal).build();
         let btn_play = Button::builder(&panel)
             .with_id(ID_PLAY_PAUSE)
-            .with_label("Avvia Lettura")
+            .with_label(&play_button_label(PlaybackStatus::Stopped, false))
             .build();
         btn_sizer.add(&btn_play, 1, SizerFlag::All, 10);
         let btn_stop = Button::builder(&panel)
             .with_id(ID_STOP)
-            .with_label("Ferma Lettura")
+            .with_label(&stop_button_label(false))
             .build();
         btn_sizer.add(&btn_stop, 1, SizerFlag::All, 10);
+        let btn_podcast_back = Button::builder(&panel)
+            .with_id(ID_PODCAST_BACKWARD)
+            .with_label(&format!("Indietro 30s ({}+Left)", MOD_CMD))
+            .build();
+        btn_podcast_back.show(false);
+        btn_sizer.add(&btn_podcast_back, 1, SizerFlag::All, 10);
+        let btn_podcast_forward = Button::builder(&panel)
+            .with_id(ID_PODCAST_FORWARD)
+            .with_label(&format!("Avanti 30s ({}+Right)", MOD_CMD))
+            .build();
+        btn_podcast_forward.show(false);
+        btn_sizer.add(&btn_podcast_forward, 1, SizerFlag::All, 10);
         let btn_save = Button::builder(&panel)
             .with_id(ID_SAVE)
-            .with_label("Salva Audiolibro (MP3)")
+            .with_label(&save_button_label())
             .build();
         btn_sizer.add(&btn_save, 1, SizerFlag::All, 10);
+        let btn_settings = Button::builder(&panel)
+            .with_id(ID_SETTINGS)
+            .with_label(&settings_button_label())
+            .build();
+        btn_sizer.add(&btn_settings, 1, SizerFlag::All, 10);
 
         main_sizer.add_sizer(&btn_sizer, 0, SizerFlag::Expand, 0);
         panel.set_sizer(main_sizer, true);
-
-        // --- Eventi Presets ---
-        let s_rate = Arc::clone(&settings);
-        let pb_rate = Arc::clone(&playback);
-        let c_rate_evt = choice_rate;
-        choice_rate.on_selection_changed(move |_| {
-            if let Some(sel) = c_rate_evt.get_selection() {
-                let mut s = s_rate.lock().unwrap();
-                s.rate = RATE_PRESETS[sel as usize].1;
-                s.save();
-
-                let mut pb = pb_rate.lock().unwrap();
-                if pb.status == PlaybackStatus::Playing {
-                    pb.refresh_requested = true;
-                    if let Some(ref sink) = pb.sink {
-                        sink.stop();
-                    }
-                }
-            }
-        });
-
-        let s_pitch = Arc::clone(&settings);
-        let pb_pitch = Arc::clone(&playback);
-        let c_pitch_evt = choice_pitch;
-        choice_pitch.on_selection_changed(move |_| {
-            if let Some(sel) = c_pitch_evt.get_selection() {
-                let mut s = s_pitch.lock().unwrap();
-                s.pitch = PITCH_PRESETS[sel as usize].1;
-                s.save();
-
-                let mut pb = pb_pitch.lock().unwrap();
-                if pb.status == PlaybackStatus::Playing {
-                    pb.refresh_requested = true;
-                    if let Some(ref sink) = pb.sink {
-                        sink.stop();
-                    }
-                }
-            }
-        });
-
-        let s_volume = Arc::clone(&settings);
-        let pb_volume = Arc::clone(&playback);
-        let c_volume_evt = choice_volume;
-        choice_volume.on_selection_changed(move |_| {
-            if let Some(sel) = c_volume_evt.get_selection() {
-                let mut s = s_volume.lock().unwrap();
-                s.volume = VOLUME_PRESETS[sel as usize].1;
-                s.save();
-
-                let mut pb = pb_volume.lock().unwrap();
-                if pb.status == PlaybackStatus::Playing {
-                    pb.refresh_requested = true;
-                    if let Some(ref sink) = pb.sink {
-                        sink.stop();
-                    }
-                }
-            }
-        });
 
         // --- Timer per aggiornamento UI ---
         let timer = Box::leak(Box::new(Timer::new(&frame)));
         let pb_timer = Arc::clone(&playback);
         let btn_play_timer = btn_play;
+        let btn_stop_timer = btn_stop;
+        let btn_podcast_back_timer = btn_podcast_back;
+        let btn_podcast_forward_timer = btn_podcast_forward;
+        let panel_timer = panel;
+        let settings_timer = Arc::clone(&settings);
+        let article_menu_state_timer = Arc::clone(&article_menu_state);
+        let podcast_menu_state_timer = Arc::clone(&podcast_menu_state);
+        let podcast_playback_timer = Rc::clone(&podcast_playback);
 
         timer.on_tick(move |_| {
-            let pb = pb_timer.lock().unwrap();
-            if pb.status == PlaybackStatus::Stopped {
-                if btn_play_timer.get_label() != "Avvia Lettura" {
-                    btn_play_timer.set_label("Avvia Lettura");
+            let tts_status = pb_timer.lock().unwrap().status;
+            let podcast_state = podcast_playback_timer.borrow();
+            let podcast_status = podcast_state.status;
+            let podcast_mode = podcast_state.selected_episode.is_some();
+            let label = play_button_label(
+                if podcast_status != PlaybackStatus::Stopped {
+                    podcast_status
+                } else {
+                    tts_status
+                },
+                podcast_mode,
+            );
+            if btn_play_timer.get_label() != label {
+                btn_play_timer.set_label(&label);
+            }
+            let stop_label = stop_button_label(podcast_mode);
+            if btn_stop_timer.get_label() != stop_label {
+                btn_stop_timer.set_label(&stop_label);
+            }
+            let seek_visible = podcast_mode;
+            btn_podcast_back_timer.show(seek_visible);
+            btn_podcast_forward_timer.show(seek_visible);
+            panel_timer.layout();
+            let article_loading_urls = {
+                let mut article_state = article_menu_state_timer.lock().unwrap();
+                if article_state.dirty {
+                    article_state.dirty = false;
+                    Some(article_state.loading_urls.clone())
+                } else {
+                    None
                 }
-            } else if pb.status == PlaybackStatus::Paused {
-                if btn_play_timer.get_label() != "Riprendi Lettura" {
-                    btn_play_timer.set_label("Riprendi Lettura");
+            };
+            if let Some(loading_urls) = article_loading_urls {
+                rebuild_articles_menu(&articles_menu_timer, &settings_timer, &loading_urls);
+            }
+
+            let podcast_loading_urls = {
+                let mut podcast_state = podcast_menu_state_timer.lock().unwrap();
+                if podcast_state.dirty {
+                    podcast_state.dirty = false;
+                    Some(podcast_state.loading_urls.clone())
+                } else {
+                    None
                 }
-            } else if pb.status == PlaybackStatus::Playing
-                && btn_play_timer.get_label() != "Pausa Lettura"
-            {
-                btn_play_timer.set_label("Pausa Lettura");
+            };
+            if let Some(loading_urls) = podcast_loading_urls {
+                rebuild_podcasts_menu(&podcasts_menu_timer, &settings_timer, &loading_urls);
             }
         });
         timer.start(200, false);
 
-        // --- Caricamento Voci ---
-        let rt_init = Arc::clone(&rt);
-        let voices_init = Arc::clone(&voices_data);
-        let langs_init = Arc::clone(&languages);
-        let choice_lang_init = choice_lang;
-        let s_init = Arc::clone(&settings);
-
-        match rt_init.block_on(edge_tts::get_edge_voices()) {
-            Ok(v_list) => {
-                let mut v_lock = voices_init.lock().unwrap();
-                *v_lock = v_list.clone();
-                let mut l_map = BTreeMap::new();
-                for v in &v_list {
-                    l_map.insert(get_language_name(&v.locale), v.locale.clone());
-                }
-                let mut l_lock = langs_init.lock().unwrap();
-                *l_lock = l_map.into_iter().collect();
-                for (name, _) in &*l_lock {
-                    choice_lang_init.append(name);
-                }
-
-                let saved_lang = s_init.lock().unwrap().language.clone();
-                if let Some(pos) = l_lock.iter().position(|(n, _)| n == &saved_lang) {
-                    choice_lang_init.set_selection(pos as u32);
-                } else if let Some(pos) = l_lock.iter().position(|(n, _)| n == "Italiano") {
-                    choice_lang_init.set_selection(pos as u32);
-                } else if !l_lock.is_empty() {
-                    choice_lang_init.set_selection(0);
-                }
-            }
-            Err(e) => println!("ERROR: Caricamento voci fallito: {}", e),
-        }
-
-        let v_filter = Arc::clone(&voices_data);
-        let l_filter = Arc::clone(&languages);
-        let f_init = Arc::clone(&filtered_voices);
-        let c_lang_ev = choice_lang;
-        let _c_voices_lc = choice_voices;
-        let s_update = Arc::clone(&settings);
-
-        let update_voices = move |cl: &Choice, cv: &Choice| {
-            if let Some(sel_idx) = cl.get_selection() {
-                let locale = l_filter.lock().unwrap()[sel_idx as usize].1.clone();
-                let lang_name = l_filter.lock().unwrap()[sel_idx as usize].0.clone();
-                let v_list: Vec<_> = v_filter
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|v| v.locale == locale)
-                    .cloned()
-                    .collect();
-                cv.clear();
-                for v in &v_list {
-                    cv.append(&v.friendly_name);
-                }
-
-                let mut s = s_update.lock().unwrap();
-                s.language = lang_name;
-
-                if let Some(pos) = v_list.iter().position(|v| v.short_name == s.voice) {
-                    cv.set_selection(pos as u32);
-                } else if !v_list.is_empty() {
-                    cv.set_selection(0);
-                    s.voice = v_list[0].short_name.clone();
-                }
-                s.save();
-                *f_init.lock().unwrap() = v_list;
-            }
-        };
-
-        update_voices(&choice_lang, &choice_voices);
-
-        let uv_arc = Arc::new(update_voices);
-        let uv_clone = Arc::clone(&uv_arc);
-        let cv_lc2 = choice_voices;
-        choice_lang.on_selection_changed(move |_| {
-            uv_clone(&c_lang_ev, &cv_lc2);
-        });
-
-        let s_voice = Arc::clone(&settings);
-        let f_voice = Arc::clone(&filtered_voices);
-        let cv_voice = choice_voices;
-        choice_voices.on_selection_changed(move |_| {
-            if let Some(sel) = cv_voice.get_selection() {
-                let voice = f_voice.lock().unwrap()[sel as usize].short_name.clone();
-                let mut s = s_voice.lock().unwrap();
-                s.voice = voice;
-                s.save();
-            }
-        });
-
         // --- Menu ---
         let f_menu = frame;
         let tc_menu = text_ctrl;
+        let settings_menu = Arc::clone(&settings);
+        let article_menu_state_menu = Arc::clone(&article_menu_state);
+        let podcast_menu_state_menu = Arc::clone(&podcast_menu_state);
+        let rt_articles_menu = Arc::clone(&rt);
+        let podcast_selection_menu = Rc::clone(&podcast_playback);
         frame.on_menu(move |event| {
             if event.get_id() == ID_OPEN {
-                let dialog = FileDialog::builder(&f_menu).with_message("Apri").with_wildcard("Supportati|*.txt;*.docx;*.pdf;*.epub;*.xlsx;*.xls;*.ods;*.html;*.htm|Tutti|*.*").build();
+                let dialog = FileDialog::builder(&f_menu).with_message("Apri").with_wildcard("Supportati|*.txt;*.doc;*.docx;*.pdf;*.epub;*.rtf;*.xlsx;*.xls;*.ods;*.html;*.htm|Tutti|*.*").build();
                 if dialog.show_modal() == ID_OK
                     && let Some(path) = dialog.get_path()
-                        && let Ok(c) = file_loader::load_any_file(Path::new(&path)) { tc_menu.set_value(&c); }
-            } else if event.get_id() == ID_EXIT { f_menu.close(true); }
+                        && let Ok(c) = file_loader::load_any_file(Path::new(&path)) {
+                    podcast_selection_menu.borrow_mut().selected_episode = None;
+                    tc_menu.set_value(&c);
+                }
+            } else if event.get_id() == ID_EXIT {
+                f_menu.close(true);
+            } else if event.get_id() == ID_ABOUT {
+                let dialog = MessageDialog::builder(&f_menu, &about_message(), about_title())
+                    .with_style(MessageDialogStyle::OK | MessageDialogStyle::IconInformation)
+                    .build();
+                dialog.show_modal();
+            } else if event.get_id() == ID_DONATIONS {
+                open_donations_dialog(&f_menu);
+            } else if event.get_id() == ID_ARTICLES_ADD_SOURCE {
+                if let Some((title, url)) = open_add_article_source_dialog(&f_menu) {
+                    add_article_source(
+                        title,
+                        url,
+                        &settings_menu,
+                        &article_menu_state_menu,
+                        &rt_articles_menu,
+                    );
+                }
+            } else if event.get_id() == ID_ARTICLES_EDIT_SOURCE {
+                if let Some((source_index, title, url)) =
+                    open_edit_article_source_dialog(&f_menu, &settings_menu)
+                {
+                    edit_article_source(
+                        source_index,
+                        title,
+                        url,
+                        &settings_menu,
+                        &article_menu_state_menu,
+                        &rt_articles_menu,
+                    );
+                }
+            } else if event.get_id() == ID_ARTICLES_DELETE_SOURCE {
+                if let Some(source_index) =
+                    open_delete_article_source_dialog(&f_menu, &settings_menu)
+                {
+                    delete_article_source(
+                        source_index,
+                        &settings_menu,
+                        &article_menu_state_menu,
+                    );
+                }
+            } else if event.get_id() == ID_ARTICLES_REORDER_SOURCES {
+                if let Some(reordered_sources) =
+                    open_reorder_article_sources_dialog(&f_menu, &settings_menu)
+                {
+                    save_reordered_article_sources(
+                        reordered_sources,
+                        &settings_menu,
+                        &article_menu_state_menu,
+                    );
+                }
+            } else if event.get_id() == ID_PODCASTS_ADD {
+                if let Some(result) = open_add_podcast_dialog(&f_menu, &rt_articles_menu) {
+                    add_podcast_source(
+                        result,
+                        &settings_menu,
+                        &podcast_menu_state_menu,
+                        &rt_articles_menu,
+                    );
+                }
+            } else if event.get_id() == ID_PODCASTS_DELETE {
+                if let Some(source_index) = open_delete_podcast_dialog(&f_menu, &settings_menu) {
+                    delete_podcast_source(source_index, &settings_menu, &podcast_menu_state_menu);
+                }
+            } else if (ID_PODCASTS_CATEGORY_BASE
+                ..ID_PODCASTS_CATEGORY_BASE + podcasts::apple_categories_it().len() as i32)
+                .contains(&event.get_id())
+            {
+                let index = (event.get_id() - ID_PODCASTS_CATEGORY_BASE) as usize;
+                if let Some(category) = podcasts::apple_categories_it().get(index)
+                    && let Some(result) =
+                        open_podcast_category_results_dialog(&f_menu, &rt_articles_menu, category)
+                {
+                    add_podcast_source(
+                        result,
+                        &settings_menu,
+                        &podcast_menu_state_menu,
+                        &rt_articles_menu,
+                    );
+                }
+            } else if let Some((source_index, item_index)) = decode_article_menu_id(event.get_id()) {
+                let item = settings_menu
+                    .lock()
+                    .unwrap()
+                    .article_sources
+                    .get(source_index)
+                    .and_then(|source| source.items.get(item_index))
+                    .cloned();
+                if let Some(item) = item
+                    && let Ok(text) = rt_articles_menu.block_on(articles::fetch_article_text(&item))
+                {
+                    podcast_selection_menu.borrow_mut().selected_episode = None;
+                    tc_menu.set_value(&text);
+                }
+            } else if let Some((source_index, episode_index)) =
+                decode_podcast_episode_menu_id(event.get_id())
+            {
+                let episode = settings_menu
+                    .lock()
+                    .unwrap()
+                    .podcast_sources
+                    .get(source_index)
+                    .and_then(|source| source.episodes.get(episode_index))
+                    .cloned();
+                if let Some(episode) = episode {
+                    podcast_selection_menu.borrow_mut().selected_episode = Some(episode.clone());
+                    let description = crate::reader::collapse_blank_lines(
+                        &crate::reader::clean_text(&episode.description),
+                    );
+                    tc_menu.set_value(&format!("{}\n\n{}", episode.title.trim(), description.trim()));
+                }
+            }
         });
 
         // --- Play / Pausa / Stop ---
@@ -445,22 +2212,88 @@ fn main() {
         let tc_p = text_ctrl;
         let b_p_label = btn_play;
         let s_play = Arc::clone(&settings);
+        let podcast_playback_play = Rc::clone(&podcast_playback);
+        let play_action = Rc::new(move || {
+            let selected_episode = podcast_playback_play.borrow().selected_episode.clone();
+            if let Some(episode) = selected_episode
+                && !episode.audio_url.trim().is_empty()
+            {
+                stop_tts_playback(&pb_p);
 
-        btn_play.on_click(move |_| {
+                let mut podcast_state = podcast_playback_play.borrow_mut();
+                let needs_new_player = podcast_state.player.is_none()
+                    || !podcast_state
+                        .current_audio_url
+                        .eq_ignore_ascii_case(&episode.audio_url);
+
+                if needs_new_player {
+                    match podcast_player::PodcastPlayer::new(&episode.audio_url) {
+                        Ok(player) => {
+                            podcast_state.player = Some(player);
+                            podcast_state.current_audio_url = episode.audio_url.clone();
+                        }
+                        Err(err) => {
+                            println!("ERROR: Avvio player podcast fallito: {}", err);
+                            podcast_state.status = PlaybackStatus::Stopped;
+                            return;
+                        }
+                    }
+                }
+
+                match podcast_state.status {
+                    PlaybackStatus::Playing => {
+                        if let Some(player) = podcast_state.player.as_ref()
+                            && let Err(err) = player.pause()
+                        {
+                            println!("ERROR: Pausa podcast fallita: {}", err);
+                            podcast_state.status = PlaybackStatus::Stopped;
+                            return;
+                        }
+                        podcast_state.status = PlaybackStatus::Paused;
+                        b_p_label.set_label(&play_button_label(PlaybackStatus::Paused, true));
+                    }
+                    PlaybackStatus::Paused => {
+                        if let Some(player) = podcast_state.player.as_ref()
+                            && let Err(err) = player.play()
+                        {
+                            println!("ERROR: Ripresa podcast fallita: {}", err);
+                            podcast_state.status = PlaybackStatus::Stopped;
+                            return;
+                        }
+                        podcast_state.status = PlaybackStatus::Playing;
+                        b_p_label.set_label(&play_button_label(PlaybackStatus::Playing, true));
+                    }
+                    PlaybackStatus::Stopped => {
+                        if let Some(player) = podcast_state.player.as_mut()
+                            && let Err(err) = player.play()
+                        {
+                            println!("ERROR: Riproduzione podcast fallita: {}", err);
+                            podcast_state.status = PlaybackStatus::Stopped;
+                            return;
+                        }
+                        podcast_state.current_audio_url = episode.audio_url.clone();
+                        podcast_state.status = PlaybackStatus::Playing;
+                        b_p_label.set_label(&play_button_label(PlaybackStatus::Playing, true));
+                    }
+                }
+                return;
+            }
+
+            stop_podcast_playback(&podcast_playback_play);
             let mut pb = pb_p.lock().unwrap();
             match pb.status {
                 PlaybackStatus::Playing => {
                     if let Some(ref s) = pb.sink {
                         s.pause();
                         pb.status = PlaybackStatus::Paused;
-                        b_p_label.set_label("Riprendi Lettura");
+                        b_p_label.set_label(&play_button_label(PlaybackStatus::Paused, false));
                     }
                 }
                 PlaybackStatus::Paused => {
                     if let Some(ref s) = pb.sink {
                         s.play();
                         pb.status = PlaybackStatus::Playing;
-                        b_p_label.set_label("Pausa Lettura");
+                        b_p_label.set_label(&play_button_label(PlaybackStatus::Playing, false));
                     }
                 }
                 PlaybackStatus::Stopped => {
@@ -469,7 +2302,7 @@ fn main() {
                         return;
                     }
 
-                    b_p_label.set_label("Pausa Lettura");
+                    b_p_label.set_label(&play_button_label(PlaybackStatus::Playing, false));
                     pb.status = PlaybackStatus::Playing;
                     pb.download_finished = false;
                     pb.refresh_requested = false;
@@ -585,9 +2418,26 @@ fn main() {
             }
         });
 
+        let play_action_click = Rc::clone(&play_action);
+        btn_play.on_click(move |_| {
+            play_action_click();
+        });
+
+        let podcast_seek_back = Rc::clone(&podcast_playback);
+        btn_podcast_back.on_click(move |_| {
+            seek_podcast_playback(&podcast_seek_back, -PODCAST_SEEK_SECONDS);
+        });
+
+        let podcast_seek_forward = Rc::clone(&podcast_playback);
+        btn_podcast_forward.on_click(move |_| {
+            seek_podcast_playback(&podcast_seek_forward, PODCAST_SEEK_SECONDS);
+        });
+
         let pb_stop = Arc::clone(&playback);
         let b_p_reset = btn_play;
-        btn_stop.on_click(move |_| {
+        let podcast_playback_stop = Rc::clone(&podcast_playback);
+        let stop_action = Rc::new(move || {
+            stop_podcast_playback(&podcast_playback_stop);
             let mut pb = pb_stop.lock().unwrap();
             if let Some(ref s) = pb.sink {
                 s.stop();
@@ -595,7 +2445,13 @@ fn main() {
             pb.sink = None;
             pb.status = PlaybackStatus::Stopped;
             pb.refresh_requested = false;
-            b_p_reset.set_label("Avvia Lettura");
+            let podcast_mode = podcast_playback_stop.borrow().selected_episode.is_some();
+            b_p_reset.set_label(&play_button_label(PlaybackStatus::Stopped, podcast_mode));
+        });
+
+        let stop_action_click = Rc::clone(&stop_action);
+        btn_stop.on_click(move |_| {
+            stop_action_click();
         });
 
         // --- Salva con Progress Bar (Non Bloccante) ---
@@ -603,8 +2459,7 @@ fn main() {
         let tc_s = text_ctrl;
         let f_save = frame;
         let s_save = Arc::clone(&settings);
-
-        btn_save.on_click(move |_| {
+        let save_action = Rc::new(move || {
             let text = tc_s.get_value();
             if text.trim().is_empty() {
                 return;
@@ -700,6 +2555,82 @@ fn main() {
                     .with_style(MessageDialogStyle::OK | MessageDialogStyle::IconInformation)
                     .build();
                     done_dialog.show_modal();
+                }
+            }
+        });
+
+        let save_action_click = Rc::clone(&save_action);
+        btn_save.on_click(move |_| {
+            save_action_click();
+        });
+
+        let frame_settings = frame;
+        let settings_state = Arc::clone(&settings);
+        let voices_state = Arc::clone(&voices_data);
+        let languages_state = Arc::clone(&languages);
+        let playback_state = Arc::clone(&playback);
+        let settings_action = Rc::new(move || {
+            open_settings_dialog(
+                &frame_settings,
+                &settings_state,
+                &voices_state,
+                &languages_state,
+                &playback_state,
+            );
+        });
+
+        let settings_action_click = Rc::clone(&settings_action);
+        btn_settings.on_click(move |_| {
+            settings_action_click();
+        });
+
+        let shortcut_target = text_ctrl;
+        let play_action_shortcut = Rc::clone(&play_action);
+        let stop_action_shortcut = Rc::clone(&stop_action);
+        let save_action_shortcut = Rc::clone(&save_action);
+        let settings_action_shortcut = Rc::clone(&settings_action);
+        let podcast_seek_back_shortcut = Rc::clone(&podcast_playback);
+        let podcast_seek_forward_shortcut = Rc::clone(&podcast_playback);
+        shortcut_target.on_key_down(move |event| {
+            if let WindowEventData::Keyboard(key_event) = event {
+                let key_code = key_event.get_key_code().unwrap_or_default();
+                let unicode_key = key_event.get_unicode_key().unwrap_or_default();
+                if key_event.cmd_down() && !key_event.alt_down() && !key_event.shift_down() {
+                    match key_code {
+                        76 | 108 => play_action_shortcut(),
+                        WXK_LEFT => {
+                            if podcast_seek_back_shortcut
+                                .borrow()
+                                .selected_episode
+                                .is_some()
+                            {
+                                seek_podcast_playback(
+                                    &podcast_seek_back_shortcut,
+                                    -PODCAST_SEEK_SECONDS,
+                                );
+                            }
+                        }
+                        WXK_RIGHT => {
+                            if podcast_seek_forward_shortcut
+                                .borrow()
+                                .selected_episode
+                                .is_some()
+                            {
+                                seek_podcast_playback(
+                                    &podcast_seek_forward_shortcut,
+                                    PODCAST_SEEK_SECONDS,
+                                );
+                            }
+                        }
+                        _ if unicode_key == 46 => stop_action_shortcut(),
+                        _ if unicode_key == 44 => settings_action_shortcut(),
+                        _ => {}
+                    }
+                } else if key_event.cmd_down() && key_event.alt_down() && !key_event.shift_down() {
+                    match key_code {
+                        65 | 97 => save_action_shortcut(),
+                        _ => {}
+                    }
                 }
             }
         });

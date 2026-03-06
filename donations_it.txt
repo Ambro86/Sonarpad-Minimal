@@ -1,0 +1,22 @@
+Donazioni
+Sonarpad e' un programma creato inizialmente per soddisfare esigenze personali, ma nel tempo e' cresciuto sempre di piu'. Il suo sviluppo richiede un lavoro costante per migliorare le funzionalita', correggere bug, ricercare nuove idee e testare a fondo ogni parte del programma.
+Se ritieni utile questo programma e desideri supportarne lo sviluppo, puoi effettuare una donazione.
+
+PayPal
+Puoi donare tramite PayPal al seguente link:
+https://www.paypal.me/ambrogio86
+Se possibile, indica come causale "Sonarpad".
+
+Bonifico bancario
+E' possibile contribuire anche tramite bonifico bancario sul conto intestato a Ambrogio Riili.
+IBAN: IT77W0306901020100000064149
+Se possibile, indica una causale chiara, ad esempio "Sonarpad".
+
+Chiunque decida di supportare il progetto verra' ringraziato nel programma e sul repository GitHub, nella sezione sostenitori, salvo richiesta di anonimato o utilizzo di un nickname.
+
+Si ringrazia per il contributo Jiri Holzinger e Paola Vagata.
+Per la traduzione in vietnamita ringrazio Anh Duc Nguyen.
+Per la traduzione in ceco ringrazio Radek Zalud e Jiri Holzinger.
+Per la traduzione in spagnolo ringrazio Arturo Fernandez Rivas.
+Per la traduzione in serbo ringrazio Mila Kuran.
+Per la traduzione in ucraino ringrazio Ivan Shtefuriak.
