@@ -17,6 +17,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure build tools (cmake + ninja)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew update
+          brew install cmake ninja
+          cmake --version
+          ninja --version
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -69,9 +78,50 @@ jobs:
           </plist>
           PLIST
 
+          # Ad-hoc sign the bundle so the generated app has a valid code signature structure.
+          # This is not notarization, but avoids shipping an unsigned/invalid bundle.
+          codesign --force --deep --sign - "${APP_DIR}"
+
+          # Bundle validity checks (fail workflow if malformed).
+          plutil -lint "${CONTENTS_DIR}/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
+
+      - name: Smoke test app launch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APP_BIN="dist/stage/Sonarpad Minimal.app/Contents/MacOS/Sonarpad Minimal"
+          LOG_FILE="$(mktemp)"
+          "${APP_BIN}" >"${LOG_FILE}" 2>&1 &
+          APP_PID=$!
+          sleep 5
+          if ! kill -0 "${APP_PID}" 2>/dev/null; then
+            echo "App exited too early during smoke test."
+            cat "${LOG_FILE}"
+            exit 1
+          fi
+          kill "${APP_PID}" || true
+
+      - name: Package DMG
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APP_NAME="Sonarpad Minimal"
+          STAGE_DIR="dist/stage"
           DMG_NAME="Sonarpad-Minimal-macOS.dmg"
           mkdir -p dist
           hdiutil create -volname "${APP_NAME}" -srcfolder "${STAGE_DIR}" -ov -format UDZO "dist/${DMG_NAME}"
+
+      - name: Validate DMG structure
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DMG_PATH="dist/Sonarpad-Minimal-macOS.dmg"
+          MOUNT_DIR="$(mktemp -d)"
+          hdiutil attach "${DMG_PATH}" -mountpoint "${MOUNT_DIR}" -nobrowse -quiet
+          test -d "${MOUNT_DIR}/Sonarpad Minimal.app"
+          codesign --verify --deep --strict --verbose=2 "${MOUNT_DIR}/Sonarpad Minimal.app"
+          hdiutil detach "${MOUNT_DIR}" -quiet
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
