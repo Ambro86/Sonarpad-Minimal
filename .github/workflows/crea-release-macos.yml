@@ -1,0 +1,92 @@
+name: Create Release (macOS)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-release:
+    name: Create Release from Latest DMG Artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          data = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))
+          version = data["package"]["version"]
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"RELEASE_VERSION=v{version}\n")
+          PY
+
+      - name: Get latest successful macOS build run
+        id: get_run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'macos-app-dmg.yml',
+              status: 'completed',
+              conclusion: 'success',
+              per_page: 1
+            });
+
+            if (runs.data.workflow_runs.length === 0) {
+              core.setFailed('No successful macOS build workflow run found');
+              return;
+            }
+
+            const latestRun = runs.data.workflow_runs[0];
+            core.setOutput('run_id', latestRun.id);
+            core.setOutput('run_sha', latestRun.head_sha.substring(0, 7));
+
+      - name: Download DMG artifact from latest build
+        uses: actions/download-artifact@v4
+        with:
+          name: sonarpad-minimal-macos-dmg
+          run-id: ${{ steps.get_run.outputs.run_id }}
+          path: ./release_files
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify DMG file
+        run: |
+          set -euo pipefail
+          ls -la ./release_files
+          dmg_count=$(find ./release_files -maxdepth 1 -type f -name "*.dmg" | wc -l)
+          if [ "$dmg_count" -eq 0 ]; then
+            echo "ERROR: no .dmg file found in artifact"
+            exit 1
+          fi
+
+      - name: Create release (if missing)
+        run: |
+          if gh release view "${{ env.RELEASE_VERSION }}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_VERSION} already exists. Skipping creation."
+          else
+            gh release create "${{ env.RELEASE_VERSION }}" \
+              --title "Sonarpad Minimal Release ${{ env.RELEASE_VERSION }}" \
+              --notes "Source build run: ${{ steps.get_run.outputs.run_id }} (${{ steps.get_run.outputs.run_sha }})"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload DMG to release
+        run: |
+          set -euo pipefail
+          for file in ./release_files/*.dmg; do
+            echo "Uploading $(basename "$file")"
+            gh release upload "${{ env.RELEASE_VERSION }}" "$file" --clobber
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
