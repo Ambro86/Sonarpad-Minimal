@@ -3,7 +3,7 @@ mod imp {
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
     use objc2_av_foundation::AVPlayer;
-    use objc2_core_media::{CMTimeGetSeconds, CMTimeMakeWithSeconds};
+    use objc2_core_media::CMTime;
     use objc2_foundation::{NSString, NSURL};
 
     pub struct PodcastPlayer {
@@ -35,9 +35,9 @@ mod imp {
         pub fn seek_by_seconds(&self, offset_seconds: f64) -> Result<(), String> {
             ensure_main_thread()?;
             let current = unsafe { self.player.currentTime() };
-            let current_seconds = unsafe { CMTimeGetSeconds(current) };
+            let current_seconds = current.seconds();
             let target_seconds = (current_seconds + offset_seconds).max(0.0);
-            let target = unsafe { CMTimeMakeWithSeconds(target_seconds, 600) };
+            let target = CMTime::with_seconds(target_seconds, 600);
             unsafe {
                 self.player.seekToTime(target);
             }
@@ -51,10 +51,9 @@ mod imp {
         Ok(unsafe { AVPlayer::playerWithURL(&url, mtm) })
     }
 
-    fn make_nsurl(url: &str, mtm: MainThreadMarker) -> Result<Retained<NSURL>, String> {
+    fn make_nsurl(url: &str, _mtm: MainThreadMarker) -> Result<Retained<NSURL>, String> {
         let ns_string = NSString::from_str(url);
-        unsafe { NSURL::URLWithString(&ns_string, mtm) }
-            .ok_or_else(|| format!("URL podcast non valido: {url}"))
+        NSURL::URLWithString(&ns_string).ok_or_else(|| format!("URL podcast non valido: {url}"))
     }
 
     fn ensure_main_thread() -> Result<MainThreadMarker, String> {
