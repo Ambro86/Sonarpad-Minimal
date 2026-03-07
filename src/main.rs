@@ -47,6 +47,8 @@ const MAX_MENU_PODCAST_EPISODES_PER_SOURCE: usize = 30;
 const PODCAST_SEEK_SECONDS: f64 = 30.0;
 const WXK_LEFT: i32 = 314;
 const WXK_RIGHT: i32 = 316;
+#[cfg(target_os = "macos")]
+const APP_STORAGE_DIR_NAME: &str = "Sonarpad Minimal";
 
 #[cfg(target_os = "macos")]
 const MOD_CMD: &str = "Cmd";
@@ -104,7 +106,7 @@ struct Settings {
 
 impl Settings {
     fn load() -> Self {
-        if let Ok(data) = std::fs::read_to_string("settings.json")
+        if let Some(data) = read_app_storage_text("settings.json")
             && let Ok(mut settings) = serde_json::from_str::<Settings>(&data)
         {
             normalize_article_sources(&mut settings);
@@ -124,8 +126,10 @@ impl Settings {
     }
 
     fn save(&self) {
-        if let Ok(data) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write("settings.json", data);
+        if let Ok(data) = serde_json::to_string_pretty(self)
+            && let Err(err) = write_app_storage_text("settings.json", &data)
+        {
+            println!("ERROR: Salvataggio impostazioni fallito: {}", err);
         }
     }
 }
@@ -406,18 +410,64 @@ fn decode_podcast_episode_menu_id(menu_id: i32) -> Option<(usize, usize)> {
     Some((source_index, episode_index))
 }
 
-fn voices_cache_path() -> PathBuf {
-    PathBuf::from("voices_cache.json")
+fn app_storage_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join(APP_STORAGE_DIR_NAME)
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+fn app_storage_path(file_name: &str) -> PathBuf {
+    app_storage_dir()
+        .map(|dir| dir.join(file_name))
+        .unwrap_or_else(|| PathBuf::from(file_name))
+}
+
+fn read_app_storage_text(file_name: &str) -> Option<String> {
+    let storage_path = app_storage_path(file_name);
+    if let Ok(data) = std::fs::read_to_string(&storage_path) {
+        return Some(data);
+    }
+
+    let legacy_path = PathBuf::from(file_name);
+    if legacy_path != storage_path {
+        return std::fs::read_to_string(legacy_path).ok();
+    }
+
+    None
+}
+
+fn write_app_storage_text(file_name: &str, data: &str) -> Result<(), String> {
+    let storage_path = app_storage_path(file_name);
+    if let Some(parent) = storage_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("creazione cartella {} fallita: {}", parent.display(), err))?;
+    }
+
+    std::fs::write(&storage_path, data)
+        .map_err(|err| format!("scrittura file {} fallita: {}", storage_path.display(), err))
 }
 
 fn load_cached_voices() -> Option<Vec<edge_tts::VoiceInfo>> {
-    let data = std::fs::read_to_string(voices_cache_path()).ok()?;
+    let data = read_app_storage_text("voices_cache.json")?;
     serde_json::from_str(&data).ok()
 }
 
 fn save_cached_voices(voices: &[edge_tts::VoiceInfo]) {
     if let Ok(data) = serde_json::to_string_pretty(voices)
-        && let Err(err) = std::fs::write(voices_cache_path(), data)
+        && let Err(err) = write_app_storage_text("voices_cache.json", &data)
     {
         println!("ERROR: Salvataggio cache voci fallito: {}", err);
     }
