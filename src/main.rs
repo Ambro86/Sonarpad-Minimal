@@ -634,12 +634,27 @@ fn normalize_article_sources(settings: &mut Settings) {
             source.title = source.url.clone();
         }
     }
+    settings
+        .article_sources
+        .retain(|source| !is_removed_default_article_source(&source.url));
     for source in &mut settings.podcast_sources {
         source.url = podcasts::normalize_url(&source.url);
         if source.title.trim().is_empty() {
             source.title = source.url.clone();
         }
     }
+}
+
+fn is_removed_default_article_source(url: &str) -> bool {
+    matches!(
+        articles::normalize_url(url).as_str(),
+        "https://www.ilpost.it/feed/"
+            | "https://www.fanpage.it/feed/"
+            | "https://www.internazionale.it/rss"
+            | "https://www.affaritaliani.it/static/rss/rssGadget.aspx?idchannel=1"
+            | "https://www.hwupgrade.it/rss/news.xml"
+            | "https://www.startmag.it/feed/"
+    )
 }
 
 fn rebuild_articles_menu(
