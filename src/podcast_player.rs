@@ -35,9 +35,9 @@ mod imp {
         pub fn seek_by_seconds(&self, offset_seconds: f64) -> Result<(), String> {
             ensure_main_thread()?;
             let current = unsafe { self.player.currentTime() };
-            let current_seconds = current.seconds();
+            let current_seconds = unsafe { current.seconds() };
             let target_seconds = (current_seconds + offset_seconds).max(0.0);
-            let target = CMTime::with_seconds(target_seconds, 600);
+            let target = unsafe { CMTime::with_seconds(target_seconds, 600) };
             unsafe {
                 self.player.seekToTime(target);
             }
