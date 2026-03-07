@@ -14,10 +14,14 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::io::Cursor;
+#[cfg(target_os = "macos")]
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
+#[cfg(target_os = "macos")]
+use uuid::Uuid;
 use wxdragon::prelude::*;
 use wxdragon::timer::Timer;
 
@@ -581,23 +585,173 @@ fn wait_for_podcast_ready(
 }
 
 #[cfg(target_os = "macos")]
-fn open_podcast_episode_externally(url: &str) -> Result<(), String> {
+fn podcast_external_open_dir() -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join("Sonarpad");
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("creazione cartella download podcast fallita: {}", err))?;
+    Ok(dir)
+}
+
+#[cfg(target_os = "macos")]
+fn podcast_extension_from_url(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let last_segment = parsed
+        .path_segments()
+        .and_then(|segments| segments.filter(|segment| !segment.is_empty()).next_back())?;
+    let extension = Path::new(last_segment).extension()?.to_str()?.trim();
+    if extension.is_empty() {
+        None
+    } else {
+        Some(extension.to_ascii_lowercase())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn podcast_extension_from_content_type(content_type: Option<&str>) -> &'static str {
+    match content_type
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "audio/mp4" | "audio/x-m4a" | "audio/m4a" => "m4a",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/aac" | "audio/aacp" => "aac",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/ogg" | "application/ogg" => "ogg",
+        "audio/flac" | "audio/x-flac" => "flac",
+        _ => "mp3",
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn download_podcast_episode_for_external_open(
+    parent: &Frame,
+    url: &str,
+) -> Result<PathBuf, String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
         return Err("URL episodio podcast vuoto".to_string());
     }
 
+    let progress = ProgressDialog::builder(
+        parent,
+        "Scaricamento Podcast",
+        "Avvio download episodio...",
+        100,
+    )
+    .with_style(ProgressDialogStyle::CanAbort | ProgressDialogStyle::Smooth)
+    .build();
+
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(900))
+        .build()
+        .map_err(|err| format!("inizializzazione download podcast fallita: {}", err))?;
+
+    let mut response = client
+        .get(trimmed)
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_0) AppleWebKit/605.1.15 (KHTML, like Gecko)",
+        )
+        .send()
+        .and_then(|response| response.error_for_status())
+        .map_err(|err| format!("download podcast fallito: {}", err))?;
+
+    let total_bytes = response.content_length();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    let extension = podcast_extension_from_url(response.url().as_str())
+        .or_else(|| podcast_extension_from_url(trimmed))
+        .unwrap_or_else(|| podcast_extension_from_content_type(content_type).to_string());
+    let file_path = podcast_external_open_dir()?.join(format!(
+        "podcast-{}.{}",
+        Uuid::new_v4().simple(),
+        extension
+    ));
+
+    let mut file = std::fs::File::create(&file_path)
+        .map_err(|err| format!("creazione file podcast fallita: {}", err))?;
+    let mut downloaded_bytes = 0_u64;
+    let mut fallback_percent = 0_i32;
+    let mut buffer = [0_u8; 64 * 1024];
+
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|err| format!("lettura download podcast fallita: {}", err))?;
+        if read == 0 {
+            break;
+        }
+
+        file.write_all(&buffer[..read])
+            .map_err(|err| format!("scrittura file podcast fallita: {}", err))?;
+        downloaded_bytes += read as u64;
+
+        let (percent, message) = if let Some(total_bytes) = total_bytes.filter(|size| *size > 0) {
+            let percent = ((downloaded_bytes.saturating_mul(100)) / total_bytes).min(99) as i32;
+            let downloaded_mb = downloaded_bytes as f64 / (1024.0 * 1024.0);
+            let total_mb = total_bytes as f64 / (1024.0 * 1024.0);
+            (
+                percent,
+                format!(
+                    "Scaricamento podcast... {:.1}/{:.1} MB",
+                    downloaded_mb, total_mb
+                ),
+            )
+        } else {
+            fallback_percent = (fallback_percent + 2).min(99);
+            let downloaded_mb = downloaded_bytes as f64 / (1024.0 * 1024.0);
+            (
+                fallback_percent,
+                format!("Scaricamento podcast... {:.1} MB", downloaded_mb),
+            )
+        };
+
+        if !progress.update(percent, Some(&message)) {
+            if let Err(err) = std::fs::remove_file(&file_path) {
+                append_podcast_log(&format!(
+                    "external_download.cleanup_error path={} error={}",
+                    file_path.display(),
+                    err
+                ));
+            }
+            return Err("scaricamento podcast annullato".to_string());
+        }
+    }
+
+    file.flush()
+        .map_err(|err| format!("finalizzazione file podcast fallita: {}", err))?;
+    progress.update(100, Some("Podcast scaricato."));
+    append_podcast_log(&format!(
+        "external_download.success url={} path={} bytes={}",
+        trimmed,
+        file_path.display(),
+        downloaded_bytes
+    ));
+    Ok(file_path)
+}
+
+#[cfg(target_os = "macos")]
+fn open_podcast_episode_externally(parent: &Frame, url: &str) -> Result<(), String> {
+    let file_path = download_podcast_episode_for_external_open(parent, url)?;
     let status = std::process::Command::new("/usr/bin/open")
-        .arg(trimmed)
+        .arg(&file_path)
         .status()
         .map_err(|err| format!("avvio app predefinita fallito: {}", err))?;
 
     if status.success() {
-        append_podcast_log(&format!("external_open.success url={trimmed}"));
+        append_podcast_log(&format!(
+            "external_open.success path={}",
+            file_path.display()
+        ));
         Ok(())
     } else {
         Err(format!(
-            "apertura URL podcast fallita con codice {:?}",
+            "apertura file podcast fallita con codice {:?}",
             status.code()
         ))
     }
@@ -2470,7 +2624,7 @@ fn main() {
                         playback_state.status = PlaybackStatus::Stopped;
                         drop(playback_state);
 
-                        if let Err(err) = open_podcast_episode_externally(external_url) {
+                        if let Err(err) = open_podcast_episode_externally(&f_menu, external_url) {
                             println!("ERROR: Apertura esterna podcast fallita: {}", err);
                         }
                     }
