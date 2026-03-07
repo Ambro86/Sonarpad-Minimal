@@ -2230,7 +2230,7 @@ fn main() {
         panel.set_sizer(main_sizer, true);
 
         // --- Timer per aggiornamento UI ---
-        let timer = Box::leak(Box::new(Timer::new(&frame)));
+        let timer = Rc::new(Timer::new(&frame));
         let pb_timer = Arc::clone(&playback);
         let btn_play_timer = btn_play;
         let btn_stop_timer = btn_stop;
@@ -2241,8 +2241,9 @@ fn main() {
         let article_menu_state_timer = Arc::clone(&article_menu_state);
         let podcast_menu_state_timer = Arc::clone(&podcast_menu_state);
         let podcast_playback_timer = Rc::clone(&podcast_playback);
+        let timer_tick = Rc::clone(&timer);
 
-        timer.on_tick(move |_| {
+        timer_tick.on_tick(move |_| {
             let tts_status = pb_timer.lock().unwrap().status;
             let podcast_state = podcast_playback_timer.borrow();
             let podcast_status = podcast_state.status;
@@ -2293,6 +2294,18 @@ fn main() {
             }
         });
         timer.start(200, false);
+
+        let timer_close = Rc::clone(&timer);
+        frame.on_close(move |event| {
+            timer_close.stop();
+            event.skip(true);
+        });
+
+        let timer_destroy = Rc::clone(&timer);
+        frame.on_destroy(move |event| {
+            timer_destroy.stop();
+            event.skip(true);
+        });
 
         // --- Menu ---
         let f_menu = frame;
