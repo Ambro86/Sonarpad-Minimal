@@ -335,6 +335,12 @@ fn select_entry_link(entry: &feed_rs::model::Entry) -> Option<String> {
 }
 
 fn select_enclosure_url(entry: &feed_rs::model::Entry) -> Option<String> {
+    if let Some(content) = entry.content.as_ref()
+        && let Some(src) = content.src.as_ref()
+    {
+        return Some(src.href.clone());
+    }
+
     for link in &entry.links {
         let href = link.href.trim();
         if href.is_empty() {
@@ -348,6 +354,66 @@ fn select_enclosure_url(entry: &feed_rs::model::Entry) -> Option<String> {
             return Some(href.to_string());
         }
     }
+
+    for link in &entry.links {
+        let href = link.href.trim();
+        if href.is_empty() {
+            continue;
+        }
+        let media_type = link.media_type.as_deref().unwrap_or("");
+        if media_type.to_ascii_lowercase().starts_with("video/") {
+            return Some(href.to_string());
+        }
+    }
+
+    for media in &entry.media {
+        for content in &media.content {
+            if let Some(url) = content.url.as_ref() {
+                let url_str = url.as_str().to_ascii_lowercase();
+                let has_media_ext = url_str.ends_with(".mp3")
+                    || url_str.ends_with(".m4a")
+                    || url_str.ends_with(".aac")
+                    || url_str.ends_with(".ogg")
+                    || url_str.ends_with(".opus")
+                    || url_str.ends_with(".wav")
+                    || url_str.contains("/audio.mp3")
+                    || url_str.contains("/audio.");
+                let is_embed = url_str.contains("/embed");
+                if has_media_ext && !is_embed {
+                    return Some(url.to_string());
+                }
+            }
+        }
+    }
+
+    for media in &entry.media {
+        for content in &media.content {
+            if let Some(url) = content.url.as_ref() {
+                let url_str = url.as_str().to_ascii_lowercase();
+                let is_embed = url_str.contains("/embed");
+                if let Some(media_type) = content.content_type.as_ref() {
+                    let media_type = media_type.to_string().to_ascii_lowercase();
+                    if (media_type.starts_with("audio/") || media_type.starts_with("video/"))
+                        && !is_embed
+                    {
+                        return Some(url.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    for media in &entry.media {
+        for content in &media.content {
+            if let Some(url) = content.url.as_ref() {
+                let url_str = url.as_str().to_ascii_lowercase();
+                if !url_str.contains("/embed") {
+                    return Some(url.to_string());
+                }
+            }
+        }
+    }
+
     None
 }
 
