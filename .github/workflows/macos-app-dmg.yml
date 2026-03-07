@@ -70,36 +70,11 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist/curl-cffi
-          python3 - <<'PY'
-          import json
-          import re
-          import urllib.request
-          from pathlib import Path
-
-          api_url = "https://api.github.com/repos/lexiforest/curl_cffi/releases/latest"
-          with urllib.request.urlopen(api_url) as response:
-              release = json.load(response)
-
-          asset = None
-          pattern = re.compile(r"^curl_cffi-.*-macosx_.*_arm64\.whl$")
-          for candidate in release.get("assets", []):
-              name = candidate.get("name", "")
-              if pattern.match(name):
-                  asset = candidate
-                  break
-
-          if asset is None:
-              raise SystemExit("No macOS arm64 curl_cffi wheel found in latest release")
-
-          env_path = Path(".github") / "curl_cffi_asset.env"
-          env_path.write_text(
-              f"CURL_CFFI_WHEEL_URL={asset['browser_download_url']}\n"
-              f"CURL_CFFI_WHEEL_NAME={asset['name']}\n",
-              encoding="utf-8",
-          )
-          PY
-          cat .github/curl_cffi_asset.env >> "${GITHUB_ENV}"
-          curl -L --fail "${CURL_CFFI_WHEEL_URL}" -o "dist/curl-cffi/${CURL_CFFI_WHEEL_NAME}"
+          python3 -m pip download \
+            --no-deps \
+            --only-binary=:all: \
+            --dest dist/curl-cffi \
+            curl_cffi
           python3 - <<'PY'
           import zipfile
           from pathlib import Path
