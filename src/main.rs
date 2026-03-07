@@ -587,7 +587,7 @@ fn open_podcast_episode_externally(url: &str) -> Result<(), String> {
         return Err("URL episodio podcast vuoto".to_string());
     }
 
-    let status = std::process::Command::new("open")
+    let status = std::process::Command::new("/usr/bin/open")
         .arg(trimmed)
         .status()
         .map_err(|err| format!("avvio app predefinita fallito: {}", err))?;
