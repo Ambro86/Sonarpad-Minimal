@@ -1,0 +1,129 @@
+name: Test Podcast Playback (macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      episode_url:
+        description: URL diretto dell'episodio podcast da provare con AVPlayer
+        required: true
+        type: string
+        default: https://anchor.fm/s/4d843d00/podcast/play/26931264/https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net%2Fstaging%2F2021-02-19%2Fc7b3e24649c330346138184e123d5966.m4a
+
+jobs:
+  probe-podcast:
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode and SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+            DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+          else
+            DEVELOPER_DIR="$(dirname "$(dirname "$(xcode-select -p)")")"
+          fi
+          echo "Using DEVELOPER_DIR=${DEVELOPER_DIR}"
+          sudo xcode-select -switch "${DEVELOPER_DIR}"
+          xcodebuild -version
+
+      - name: Probe podcast episode with AVPlayer
+        shell: bash
+        env:
+          EPISODE_URL: ${{ inputs.episode_url }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/podcast_probe.swift <<'SWIFT'
+          import AVFoundation
+          import Foundation
+
+          struct ProbeFailure: Error, CustomStringConvertible {
+              let message: String
+              var description: String { message }
+          }
+
+          func fail(_ message: String) -> Never {
+              fputs("ERROR: \(message)\n", stderr)
+              exit(1)
+          }
+
+          guard let rawURL = ProcessInfo.processInfo.environment["EPISODE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                !rawURL.isEmpty else {
+              fail("EPISODE_URL mancante")
+          }
+
+          guard let url = URL(string: rawURL) else {
+              fail("URL non valido: \(rawURL)")
+          }
+
+          let asset = AVURLAsset(url: url)
+          let item = AVPlayerItem(asset: asset)
+          let player = AVPlayer(playerItem: item)
+          let start = Date()
+          let timeout: TimeInterval = 35
+
+          print("Probe URL: \(rawURL)")
+          print("Starting AVPlayer probe")
+
+          player.play()
+
+          var lastSnapshot = ""
+          var readyObserved = false
+
+          while Date().timeIntervalSince(start) < timeout {
+              RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
+
+              let itemStatus = item.status
+              let playerStatus = player.status
+              let timeControl = player.timeControlStatus
+              let rate = player.rate
+              let likelyToKeepUp = item.isPlaybackLikelyToKeepUp
+              let bufferEmpty = item.isPlaybackBufferEmpty
+              let bufferFull = item.isPlaybackBufferFull
+              let itemError = item.error?.localizedDescription ?? "none"
+              let playerError = player.error?.localizedDescription ?? "none"
+              let waitingReason = player.reasonForWaitingToPlay ?? "none"
+
+              let snapshot = """
+              item_status=\(itemStatus.rawValue) player_status=\(playerStatus.rawValue) \
+              time_control=\(timeControl.rawValue) rate=\(rate) likely_to_keep_up=\(likelyToKeepUp) \
+              buffer_empty=\(bufferEmpty) buffer_full=\(bufferFull) waiting_reason=\(waitingReason) \
+              item_error=\(itemError) player_error=\(playerError)
+              """
+
+              if snapshot != lastSnapshot {
+                  print(snapshot)
+                  lastSnapshot = snapshot
+              }
+
+              if itemStatus == .failed {
+                  fail("AVPlayerItem failed: \(itemError)")
+              }
+
+              if playerStatus == .failed {
+                  fail("AVPlayer failed: \(playerError)")
+              }
+
+              if itemStatus == .readyToPlay {
+                  readyObserved = true
+              }
+
+              if readyObserved && (timeControl == .playing || rate > 0 || likelyToKeepUp) {
+                  print("SUCCESS: player reached a playable state")
+                  player.pause()
+                  exit(0)
+              }
+          }
+
+          if item.status == .readyToPlay {
+              fail("Timeout: item ready but player never reached a playable state")
+          } else {
+              fail("Timeout: item never became ready to play")
+          }
+          SWIFT
+
+          swift /tmp/podcast_probe.swift
