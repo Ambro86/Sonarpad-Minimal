@@ -19,12 +19,12 @@ jobs:
             rust_target: aarch64-apple-darwin
             pdfium_archive: pdfium-mac-arm64.tgz
             dmg_name: Sonarpad-macOS-AppleSilicon.dmg
-            artifact_name: sonarpad-minimal-macos-dmg-apple-silicon
+            artifact_name: sonarpad-macos-dmg-apple-silicon
           - runs_on: macos-15-intel
             rust_target: x86_64-apple-darwin
             pdfium_archive: pdfium-mac-x64.tgz
             dmg_name: Sonarpad-macOS-Intel.dmg
-            artifact_name: sonarpad-minimal-macos-dmg-intel
+            artifact_name: sonarpad-macos-dmg-intel
     runs-on: ${{ matrix.runs_on }}
     env:
       CMAKE_ARGS: -DwxUSE_OPENGL=OFF
