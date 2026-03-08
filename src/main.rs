@@ -375,16 +375,6 @@ fn handle_shortcut_event(
                             seek_podcast_playback(podcast_seek_forward, PODCAST_SEEK_SECONDS);
                         }
                     }
-                    _ if matches_ascii_key(key_code, unicode_key, '.') => (actions.stop)(),
-                    _ if matches_ascii_key(key_code, unicode_key, ',') => (actions.settings)(),
-                    _ => {}
-                }
-            } else if command_shortcut_down(&key_event)
-                && key_event.alt_down()
-                && !key_event.shift_down()
-            {
-                match key_code {
-                    _ if matches_ascii_key(key_code, unicode_key, 'a') => (actions.save)(),
                     _ => {}
                 }
             }
