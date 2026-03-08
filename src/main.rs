@@ -32,6 +32,7 @@ const ID_EXIT: i32 = 102;
 const ID_ABOUT: i32 = 103;
 const ID_DONATIONS: i32 = 104;
 const ID_CHECK_UPDATES: i32 = 105;
+const ID_START_PLAYBACK: i32 = 2000;
 const ID_PLAY_PAUSE: i32 = 2001;
 const ID_STOP: i32 = 2003;
 const ID_SAVE: i32 = 2002;
@@ -119,6 +120,14 @@ struct SaveAudiobookState {
 enum PendingSaveDialog {
     Success,
     Error(String),
+}
+
+struct ShortcutActions {
+    start: Rc<dyn Fn()>,
+    play_pause: Rc<dyn Fn()>,
+    stop: Rc<dyn Fn()>,
+    save: Rc<dyn Fn()>,
+    settings: Rc<dyn Fn()>,
 }
 
 #[derive(Deserialize)]
@@ -279,20 +288,32 @@ fn nearest_preset_index(presets: &[(&str, i32)], value: i32) -> usize {
         .unwrap_or(0)
 }
 
-fn play_button_label(status: PlaybackStatus, podcast_mode: bool) -> String {
+fn start_button_label(podcast_mode: bool) -> String {
     let shortcut = format!("{}+L", MOD_CMD);
 
     if podcast_mode {
+        format!("Riproduci Podcast ({shortcut})")
+    } else {
+        format!("Avvia Lettura ({shortcut})")
+    }
+}
+
+fn play_button_label(status: PlaybackStatus, podcast_mode: bool) -> String {
+    let shortcut = format!("{}+P", MOD_CMD);
+
+    if podcast_mode {
         match status {
-            PlaybackStatus::Stopped => format!("Riproduci Podcast ({shortcut})"),
             PlaybackStatus::Playing => format!("Pausa Podcast ({shortcut})"),
-            PlaybackStatus::Paused => format!("Riprendi Podcast ({shortcut})"),
+            PlaybackStatus::Stopped | PlaybackStatus::Paused => {
+                format!("Riprendi Podcast ({shortcut})")
+            }
         }
     } else {
         match status {
-            PlaybackStatus::Stopped => format!("Avvia Lettura ({shortcut})"),
             PlaybackStatus::Playing => format!("Pausa Lettura ({shortcut})"),
-            PlaybackStatus::Paused => format!("Riprendi Lettura ({shortcut})"),
+            PlaybackStatus::Stopped | PlaybackStatus::Paused => {
+                format!("Riprendi Lettura ({shortcut})")
+            }
         }
     }
 }
@@ -325,17 +346,14 @@ fn command_shortcut_down(key_event: &KeyboardEvent) -> bool {
 
 fn handle_shortcut_event(
     event: WindowEventData,
-    play_action: &Rc<dyn Fn()>,
-    stop_action: &Rc<dyn Fn()>,
-    save_action: &Rc<dyn Fn()>,
-    settings_action: &Rc<dyn Fn()>,
+    actions: &ShortcutActions,
     podcast_seek_back: &Rc<RefCell<PodcastPlaybackState>>,
     podcast_seek_forward: &Rc<RefCell<PodcastPlaybackState>>,
 ) {
     if let WindowEventData::Keyboard(key_event) = event {
         #[cfg(target_os = "macos")]
         {
-            let _ = (play_action, stop_action, save_action, settings_action);
+            let _ = actions;
             if command_shortcut_down(&key_event) && !key_event.alt_down() && !key_event.shift_down()
             {
                 match key_event.get_key_code().unwrap_or_default() {
@@ -362,7 +380,8 @@ fn handle_shortcut_event(
         #[cfg(not(target_os = "macos"))]
         if command_shortcut_down(&key_event) && !key_event.alt_down() && !key_event.shift_down() {
             match key_code {
-                76 | 108 => play_action(),
+                76 | 108 => (actions.start)(),
+                80 | 112 => (actions.play_pause)(),
                 WXK_LEFT => {
                     if podcast_seek_back.borrow().selected_episode.is_some() {
                         seek_podcast_playback(podcast_seek_back, -PODCAST_SEEK_SECONDS);
@@ -373,8 +392,8 @@ fn handle_shortcut_event(
                         seek_podcast_playback(podcast_seek_forward, PODCAST_SEEK_SECONDS);
                     }
                 }
-                _ if unicode_key == 46 => stop_action(),
-                _ if unicode_key == 44 => settings_action(),
+                _ if unicode_key == 46 => (actions.stop)(),
+                _ if unicode_key == 44 => (actions.settings)(),
                 _ => {}
             }
         } else if command_shortcut_down(&key_event)
@@ -382,7 +401,7 @@ fn handle_shortcut_event(
             && !key_event.shift_down()
         {
             match key_code {
-                65 | 97 => save_action(),
+                65 | 97 => (actions.save)(),
                 _ => {}
             }
         }
@@ -2723,16 +2742,23 @@ fn main() {
         );
         file_menu.append_separator();
         #[cfg(target_os = "macos")]
+        let start_menu_item = file_menu.append(
+            ID_START_PLAYBACK,
+            "Avvia lettura\tCmd+L",
+            "Avvia la lettura o la riproduzione del podcast",
+            ItemKind::Normal,
+        );
+        #[cfg(target_os = "macos")]
         let play_menu_item = file_menu.append(
             ID_PLAY_PAUSE,
-            "Avvia o pausa lettura\tCtrl+L",
-            "Avvia o mette in pausa la lettura",
+            "Pausa o riprendi lettura\tCmd+P",
+            "Mette in pausa o riprende la lettura",
             ItemKind::Normal,
         );
         #[cfg(target_os = "macos")]
         let stop_menu_item = file_menu.append(
             ID_STOP,
-            "Ferma lettura\tCtrl+.",
+            "Ferma lettura\tCmd+.",
             "Ferma la lettura o il podcast",
             ItemKind::Normal,
         );
@@ -2802,6 +2828,11 @@ fn main() {
         main_sizer.add(&text_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 5);
 
         let btn_sizer = BoxSizer::builder(Orientation::Horizontal).build();
+        let btn_start = Button::builder(&panel)
+            .with_id(ID_START_PLAYBACK)
+            .with_label(&start_button_label(false))
+            .build();
+        btn_sizer.add(&btn_start, 1, SizerFlag::All, 10);
         let btn_play = Button::builder(&panel)
             .with_id(ID_PLAY_PAUSE)
             .with_label(&play_button_label(PlaybackStatus::Stopped, false))
@@ -2841,6 +2872,7 @@ fn main() {
         // --- Timer per aggiornamento UI ---
         let timer = Rc::new(Timer::new(&frame));
         let pb_timer = Arc::clone(&playback);
+        let btn_start_timer = btn_start;
         let btn_play_timer = btn_play;
         let btn_stop_timer = btn_stop;
         let btn_podcast_back_timer = btn_podcast_back;
@@ -2857,6 +2889,10 @@ fn main() {
             let podcast_state = podcast_playback_timer.borrow();
             let podcast_status = podcast_state.status;
             let podcast_mode = podcast_state.selected_episode.is_some();
+            let start_label = start_button_label(podcast_mode);
+            if btn_start_timer.get_label() != start_label {
+                btn_start_timer.set_label(&start_label);
+            }
             let label = play_button_label(
                 if podcast_status != PlaybackStatus::Stopped {
                     podcast_status
@@ -3449,6 +3485,43 @@ fn main() {
             }
         });
 
+        let playback_start = Arc::clone(&playback);
+        let podcast_playback_start = Rc::clone(&podcast_playback);
+        let start_action: Rc<dyn Fn()> = {
+            let play_action = Rc::clone(&play_action);
+            Rc::new(move || {
+                let (podcast_mode, podcast_status) = {
+                    let podcast_state = podcast_playback_start.borrow();
+                    (
+                        podcast_state.selected_episode.is_some(),
+                        podcast_state.status,
+                    )
+                };
+                if podcast_mode {
+                    if podcast_status == PlaybackStatus::Stopped {
+                        play_action();
+                    }
+                    return;
+                }
+
+                if playback_start.lock().unwrap().status == PlaybackStatus::Stopped {
+                    play_action();
+                }
+            })
+        };
+
+        let start_action_click = Rc::clone(&start_action);
+        btn_start.on_click(move |_| {
+            start_action_click();
+        });
+        #[cfg(target_os = "macos")]
+        if let Some(item) = start_menu_item {
+            let start_action_menu = Rc::clone(&start_action);
+            item.on_click(move |_| {
+                start_action_menu();
+            });
+        }
+
         let play_action_click = Rc::clone(&play_action);
         btn_play.on_click(move |_| {
             play_action_click();
@@ -3882,11 +3955,13 @@ fn main() {
 
         #[cfg(target_os = "macos")]
         {
+            let start_action_menu = Rc::clone(&start_action);
             let play_action_menu = Rc::clone(&play_action);
             let stop_action_menu = Rc::clone(&stop_action);
             let save_action_menu = Rc::clone(&save_action);
             let settings_action_menu = Rc::clone(&settings_action);
             frame.on_menu(move |event| match event.get_id() {
+                ID_START_PLAYBACK => start_action_menu(),
                 ID_PLAY_PAUSE => play_action_menu(),
                 ID_STOP => stop_action_menu(),
                 ID_SAVE => save_action_menu(),
@@ -3897,19 +3972,19 @@ fn main() {
 
         #[cfg(target_os = "macos")]
         {
-            let play_action_shortcut = Rc::clone(&play_action);
-            let stop_action_shortcut = Rc::clone(&stop_action);
-            let save_action_shortcut = Rc::clone(&save_action);
-            let settings_action_shortcut = Rc::clone(&settings_action);
+            let shortcut_actions = ShortcutActions {
+                start: Rc::clone(&start_action),
+                play_pause: Rc::clone(&play_action),
+                stop: Rc::clone(&stop_action),
+                save: Rc::clone(&save_action),
+                settings: Rc::clone(&settings_action),
+            };
             let podcast_seek_back_shortcut = Rc::clone(&podcast_playback);
             let podcast_seek_forward_shortcut = Rc::clone(&podcast_playback);
             frame.on_key_down(move |event| {
                 handle_shortcut_event(
                     event,
-                    &play_action_shortcut,
-                    &stop_action_shortcut,
-                    &save_action_shortcut,
-                    &settings_action_shortcut,
+                    &shortcut_actions,
                     &podcast_seek_back_shortcut,
                     &podcast_seek_forward_shortcut,
                 );
@@ -3918,19 +3993,19 @@ fn main() {
 
         #[cfg(target_os = "macos")]
         {
-            let play_action_shortcut = Rc::clone(&play_action);
-            let stop_action_shortcut = Rc::clone(&stop_action);
-            let save_action_shortcut = Rc::clone(&save_action);
-            let settings_action_shortcut = Rc::clone(&settings_action);
+            let shortcut_actions = ShortcutActions {
+                start: Rc::clone(&start_action),
+                play_pause: Rc::clone(&play_action),
+                stop: Rc::clone(&stop_action),
+                save: Rc::clone(&save_action),
+                settings: Rc::clone(&settings_action),
+            };
             let podcast_seek_back_shortcut = Rc::clone(&podcast_playback);
             let podcast_seek_forward_shortcut = Rc::clone(&podcast_playback);
             text_ctrl.on_key_down(move |event| {
                 handle_shortcut_event(
                     event,
-                    &play_action_shortcut,
-                    &stop_action_shortcut,
-                    &save_action_shortcut,
-                    &settings_action_shortcut,
+                    &shortcut_actions,
                     &podcast_seek_back_shortcut,
                     &podcast_seek_forward_shortcut,
                 );
@@ -3939,19 +4014,19 @@ fn main() {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let play_action_shortcut = Rc::clone(&play_action);
-            let stop_action_shortcut = Rc::clone(&stop_action);
-            let save_action_shortcut = Rc::clone(&save_action);
-            let settings_action_shortcut = Rc::clone(&settings_action);
+            let shortcut_actions = ShortcutActions {
+                start: Rc::clone(&start_action),
+                play_pause: Rc::clone(&play_action),
+                stop: Rc::clone(&stop_action),
+                save: Rc::clone(&save_action),
+                settings: Rc::clone(&settings_action),
+            };
             let podcast_seek_back_shortcut = Rc::clone(&podcast_playback);
             let podcast_seek_forward_shortcut = Rc::clone(&podcast_playback);
             text_ctrl.on_key_down(move |event| {
                 handle_shortcut_event(
                     event,
-                    &play_action_shortcut,
-                    &stop_action_shortcut,
-                    &save_action_shortcut,
-                    &settings_action_shortcut,
+                    &shortcut_actions,
                     &podcast_seek_back_shortcut,
                     &podcast_seek_forward_shortcut,
                 );
