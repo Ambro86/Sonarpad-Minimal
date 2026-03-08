@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 #[cfg(any(target_os = "macos", windows))]
 use uuid::Uuid;
+use wxdragon::event::KeyboardEvent;
 use wxdragon::prelude::*;
 use wxdragon::timer::Timer;
 
@@ -263,17 +264,19 @@ fn nearest_preset_index(presets: &[(&str, i32)], value: i32) -> usize {
 }
 
 fn play_button_label(status: PlaybackStatus, podcast_mode: bool) -> String {
+    let shortcut = format!("{}+L", MOD_CMD);
+
     if podcast_mode {
         match status {
-            PlaybackStatus::Stopped => format!("Riproduci Podcast ({}+L)", MOD_CMD),
-            PlaybackStatus::Playing => format!("Pausa Podcast ({}+L)", MOD_CMD),
-            PlaybackStatus::Paused => format!("Riprendi Podcast ({}+L)", MOD_CMD),
+            PlaybackStatus::Stopped => format!("Riproduci Podcast ({shortcut})"),
+            PlaybackStatus::Playing => format!("Pausa Podcast ({shortcut})"),
+            PlaybackStatus::Paused => format!("Riprendi Podcast ({shortcut})"),
         }
     } else {
         match status {
-            PlaybackStatus::Stopped => format!("Avvia Lettura ({}+L)", MOD_CMD),
-            PlaybackStatus::Playing => format!("Pausa Lettura ({}+L)", MOD_CMD),
-            PlaybackStatus::Paused => format!("Riprendi Lettura ({}+L)", MOD_CMD),
+            PlaybackStatus::Stopped => format!("Avvia Lettura ({shortcut})"),
+            PlaybackStatus::Playing => format!("Pausa Lettura ({shortcut})"),
+            PlaybackStatus::Paused => format!("Riprendi Lettura ({shortcut})"),
         }
     }
 }
@@ -292,6 +295,16 @@ fn stop_button_label(podcast_mode: bool) -> String {
 
 fn settings_button_label() -> String {
     format!("Impostazioni ({}+,)", MOD_CMD)
+}
+
+#[cfg(target_os = "macos")]
+fn command_shortcut_down(key_event: &KeyboardEvent) -> bool {
+    key_event.cmd_down() || key_event.meta_down()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn command_shortcut_down(key_event: &KeyboardEvent) -> bool {
+    key_event.cmd_down()
 }
 
 fn about_title() -> &'static str {
@@ -3555,7 +3568,10 @@ fn main() {
             if let WindowEventData::Keyboard(key_event) = event {
                 let key_code = key_event.get_key_code().unwrap_or_default();
                 let unicode_key = key_event.get_unicode_key().unwrap_or_default();
-                if key_event.cmd_down() && !key_event.alt_down() && !key_event.shift_down() {
+                if command_shortcut_down(&key_event)
+                    && !key_event.alt_down()
+                    && !key_event.shift_down()
+                {
                     match key_code {
                         76 | 108 => play_action_shortcut(),
                         WXK_LEFT => {
@@ -3586,7 +3602,10 @@ fn main() {
                         _ if unicode_key == 44 => settings_action_shortcut(),
                         _ => {}
                     }
-                } else if key_event.cmd_down() && key_event.alt_down() && !key_event.shift_down() {
+                } else if command_shortcut_down(&key_event)
+                    && key_event.alt_down()
+                    && !key_event.shift_down()
+                {
                     match key_code {
                         65 | 97 => save_action_shortcut(),
                         _ => {}
@@ -3597,6 +3616,9 @@ fn main() {
 
         #[cfg(target_os = "macos")]
         frame.on_key_down(shortcut_handler);
+
+        #[cfg(target_os = "macos")]
+        text_ctrl.on_key_down(shortcut_handler);
 
         #[cfg(not(target_os = "macos"))]
         text_ctrl.on_key_down(shortcut_handler);
