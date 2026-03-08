@@ -45,6 +45,8 @@ const ID_ARTICLES_EDIT_SOURCE: i32 = 2102;
 const ID_ARTICLES_REORDER_SOURCES: i32 = 2103;
 const ID_PODCASTS_ADD: i32 = 2300;
 const ID_PODCASTS_DELETE: i32 = 2301;
+const ID_PODCAST_DIALOG_OPEN: i32 = 4101;
+const ID_PODCAST_DIALOG_SAVE_AS: i32 = 4102;
 const ID_PODCASTS_CATEGORY_BASE: i32 = 2400;
 const ID_PODCASTS_SOURCE_BASE: i32 = 2600;
 const ID_PODCASTS_EPISODE_BASE: i32 = 30000;
@@ -120,6 +122,12 @@ struct SaveAudiobookState {
 enum PendingSaveDialog {
     Success,
     Error(String),
+}
+
+enum PodcastDownloadAction {
+    Open,
+    SaveAs,
+    Close,
 }
 
 struct ShortcutActions {
@@ -499,6 +507,100 @@ fn show_message_dialog(parent: &Frame, title: &str, message: &str) {
     dialog.show_modal();
 }
 
+fn prompt_downloaded_podcast_action(parent: &Frame) -> PodcastDownloadAction {
+    let dialog = Dialog::builder(parent, "Podcast scaricato")
+        .with_style(DialogStyle::Caption | DialogStyle::SystemMenu | DialogStyle::CloseBox)
+        .with_size(460, 180)
+        .build();
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let text = StaticText::builder(&panel)
+        .with_label("L'episodio podcast e' stato scaricato.")
+        .build();
+    root.add(&text, 1, SizerFlag::Expand | SizerFlag::All, 12);
+
+    let button_row = BoxSizer::builder(Orientation::Horizontal).build();
+    let btn_open = Button::builder(&panel)
+        .with_id(ID_PODCAST_DIALOG_OPEN)
+        .with_label("Apri")
+        .build();
+    let btn_save_as = Button::builder(&panel)
+        .with_id(ID_PODCAST_DIALOG_SAVE_AS)
+        .with_label("Salva con nome...")
+        .build();
+    let btn_close = Button::builder(&panel)
+        .with_id(ID_CANCEL)
+        .with_label("Chiudi")
+        .build();
+    button_row.add_spacer(1);
+    button_row.add(&btn_open, 0, SizerFlag::All, 10);
+    button_row.add(&btn_save_as, 0, SizerFlag::All, 10);
+    button_row.add(&btn_close, 0, SizerFlag::All, 10);
+    root.add_sizer(&button_row, 0, SizerFlag::Expand, 0);
+
+    panel.set_sizer(root, true);
+    dialog.set_escape_id(ID_CANCEL);
+
+    let dialog_open = dialog;
+    btn_open.on_click(move |_| {
+        dialog_open.end_modal(ID_PODCAST_DIALOG_OPEN);
+    });
+
+    let dialog_save_as = dialog;
+    btn_save_as.on_click(move |_| {
+        dialog_save_as.end_modal(ID_PODCAST_DIALOG_SAVE_AS);
+    });
+
+    let dialog_close = dialog;
+    btn_close.on_click(move |_| {
+        dialog_close.end_modal(ID_CANCEL);
+    });
+
+    match dialog.show_modal() {
+        ID_PODCAST_DIALOG_OPEN => PodcastDownloadAction::Open,
+        ID_PODCAST_DIALOG_SAVE_AS => PodcastDownloadAction::SaveAs,
+        _ => PodcastDownloadAction::Close,
+    }
+}
+
+fn save_downloaded_podcast_file(
+    parent: &Frame,
+    file_path: &Path,
+    suggested_name: &str,
+) -> Result<(), String> {
+    let extension = file_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| !ext.trim().is_empty())
+        .unwrap_or("mp3");
+    let default_file = format!("{}.{}", sanitize_filename(suggested_name), extension);
+    let wildcard = format!("File audio (*.{extension})|*.{extension}|Tutti|*.*");
+    let dialog = FileDialog::builder(parent)
+        .with_message("Salva episodio podcast")
+        .with_default_file(&default_file)
+        .with_wildcard(&wildcard)
+        .with_style(FileDialogStyle::Save | FileDialogStyle::OverwritePrompt)
+        .build();
+
+    if dialog.show_modal() != ID_OK {
+        return Ok(());
+    }
+
+    let Some(destination_path) = dialog.get_path() else {
+        return Ok(());
+    };
+
+    std::fs::copy(file_path, &destination_path)
+        .map_err(|err| format!("salvataggio episodio podcast fallito: {}", err))?;
+    append_podcast_log(&format!(
+        "external_open.saved_copy source={} destination={}",
+        file_path.display(),
+        destination_path
+    ));
+    Ok(())
+}
+
 fn confirm_delete_dialog(parent: &Frame, title: &str, message: &str) -> bool {
     let dialog = MessageDialog::builder(parent, message, title)
         .with_style(MessageDialogStyle::YesNo | MessageDialogStyle::IconQuestion)
@@ -639,6 +741,26 @@ fn percent_encode(input: &str) -> String {
 fn build_google_news_rss_url(keyword: &str) -> String {
     let query = percent_encode(keyword.trim());
     format!("https://news.google.com/rss/search?q={query}&hl=it&gl=IT&ceid=IT:it")
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+    let cleaned = name
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || invalid_chars.contains(&ch) {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+    let trimmed = cleaned.trim().trim_matches('.').trim();
+    if trimmed.is_empty() {
+        "podcast".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn format_google_news_source_title(keyword: &str) -> String {
@@ -1073,7 +1195,11 @@ fn download_podcast_episode_for_external_open(
 }
 
 #[cfg(any(target_os = "macos", windows))]
-fn open_podcast_episode_externally(parent: &Frame, url: &str) -> Result<(), String> {
+fn open_podcast_episode_externally(
+    parent: &Frame,
+    url: &str,
+    suggested_name: &str,
+) -> Result<(), String> {
     append_podcast_log(&format!("external_open.begin url={}", url.trim()));
     let progress = ProgressDialog::builder(
         parent,
@@ -1146,7 +1272,13 @@ fn open_podcast_episode_externally(parent: &Frame, url: &str) -> Result<(), Stri
         }
     };
 
-    open_podcast_file_with_default_app(&file_path)
+    match prompt_downloaded_podcast_action(parent) {
+        PodcastDownloadAction::Open => open_podcast_file_with_default_app(&file_path),
+        PodcastDownloadAction::SaveAs => {
+            save_downloaded_podcast_file(parent, &file_path, suggested_name)
+        }
+        PodcastDownloadAction::Close => Ok(()),
+    }
 }
 
 #[cfg(any(target_os = "macos", windows))]
@@ -3125,7 +3257,9 @@ fn main() {
                         drop(playback_state);
                         append_podcast_log("podcast_menu.external_open_call");
 
-                        if let Err(err) = open_podcast_episode_externally(&f_menu, external_url) {
+                        if let Err(err) =
+                            open_podcast_episode_externally(&f_menu, external_url, &episode.title)
+                        {
                             append_podcast_log(&format!(
                                 "podcast_menu.external_open_error error={}",
                                 err
@@ -3167,12 +3301,9 @@ fn main() {
         });
 
         // --- Play / Pausa / Stop ---
-        let rt_p = Arc::clone(&rt);
         let pb_p = Arc::clone(&playback);
-        let tc_p = text_ctrl;
         let b_p_label = btn_play;
         let f_play = frame;
-        let s_play = Arc::clone(&settings);
         let podcast_playback_play = Rc::clone(&podcast_playback);
         let play_action: Rc<dyn Fn()> = Rc::new(move || {
             let selected_episode = podcast_playback_play.borrow().selected_episode.clone();
@@ -3280,43 +3411,7 @@ fn main() {
                         podcast_state.status = PlaybackStatus::Playing;
                         b_p_label.set_label(&play_button_label(PlaybackStatus::Playing, true));
                     }
-                    PlaybackStatus::Stopped => {
-                        if let Some(player) = podcast_state.player.as_ref() {
-                            log_podcast_player_snapshot(
-                                player,
-                                "play_action.play.before",
-                                &episode.audio_url,
-                            );
-                            if let Err(err) = player.play() {
-                                println!("ERROR: Riproduzione podcast fallita: {}", err);
-                                append_podcast_log(&format!(
-                                    "play_action.play.error audio_url={} error={}",
-                                    episode.audio_url, err
-                                ));
-                                podcast_state.status = PlaybackStatus::Stopped;
-                                return;
-                            }
-                            log_podcast_player_snapshot(
-                                player,
-                                "play_action.play.after",
-                                &episode.audio_url,
-                            );
-                            if !wait_for_podcast_ready(&f_play, player, &episode.audio_url) {
-                                if let Err(err) = player.pause() {
-                                    println!("ERROR: Pausa podcast dopo timeout fallita: {}", err);
-                                    append_podcast_log(&format!(
-                                        "play_action.play.cleanup_error audio_url={} error={}",
-                                        episode.audio_url, err
-                                    ));
-                                }
-                                podcast_state.status = PlaybackStatus::Stopped;
-                                return;
-                            }
-                        }
-                        podcast_state.current_audio_url = episode.audio_url.clone();
-                        podcast_state.status = PlaybackStatus::Playing;
-                        b_p_label.set_label(&play_button_label(PlaybackStatus::Playing, true));
-                    }
+                    PlaybackStatus::Stopped => {}
                 }
                 append_podcast_log(&format!(
                     "play_action.completed audio_url={} new_status={:?}",
@@ -3342,173 +3437,242 @@ fn main() {
                         b_p_label.set_label(&play_button_label(PlaybackStatus::Playing, false));
                     }
                 }
-                PlaybackStatus::Stopped => {
-                    let text = tc_p.get_value();
-                    if text.trim().is_empty() {
+                PlaybackStatus::Stopped => {}
+            }
+        });
+
+        let rt_p_start = Arc::clone(&rt);
+        let pb_p_start = Arc::clone(&playback);
+        let tc_p_start = text_ctrl;
+        let f_play_start = frame;
+        let s_play_start = Arc::clone(&settings);
+        let podcast_playback_start = Rc::clone(&podcast_playback);
+        let start_action: Rc<dyn Fn()> = Rc::new(move || {
+            let selected_episode = podcast_playback_start.borrow().selected_episode.clone();
+            if let Some(episode) = selected_episode
+                && !episode.audio_url.trim().is_empty()
+            {
+                stop_tts_playback(&pb_p_start);
+                append_podcast_log(&format!(
+                    "start_action.selected_episode title={} audio_url={} previous_status={:?}",
+                    episode.title,
+                    episode.audio_url,
+                    podcast_playback_start.borrow().status
+                ));
+
+                let mut podcast_state = podcast_playback_start.borrow_mut();
+                if podcast_state.status != PlaybackStatus::Stopped {
+                    return;
+                }
+
+                let needs_new_player = podcast_state.player.is_none()
+                    || !podcast_state
+                        .current_audio_url
+                        .eq_ignore_ascii_case(&episode.audio_url);
+
+                if needs_new_player {
+                    match podcast_player::PodcastPlayer::new(&episode.audio_url) {
+                        Ok(player) => {
+                            log_podcast_player_snapshot(
+                                &player,
+                                "start_action.new_player",
+                                &episode.audio_url,
+                            );
+                            podcast_state.player = Some(player);
+                            podcast_state.current_audio_url = episode.audio_url.clone();
+                        }
+                        Err(err) => {
+                            println!("ERROR: Avvio player podcast fallito: {}", err);
+                            append_podcast_log(&format!(
+                                "start_action.new_player_error audio_url={} error={}",
+                                episode.audio_url, err
+                            ));
+                            podcast_state.status = PlaybackStatus::Stopped;
+                            return;
+                        }
+                    }
+                }
+
+                if let Some(player) = podcast_state.player.as_ref() {
+                    log_podcast_player_snapshot(
+                        player,
+                        "start_action.play.before",
+                        &episode.audio_url,
+                    );
+                    if let Err(err) = player.play() {
+                        println!("ERROR: Riproduzione podcast fallita: {}", err);
+                        append_podcast_log(&format!(
+                            "start_action.play.error audio_url={} error={}",
+                            episode.audio_url, err
+                        ));
+                        podcast_state.status = PlaybackStatus::Stopped;
                         return;
                     }
+                    log_podcast_player_snapshot(
+                        player,
+                        "start_action.play.after",
+                        &episode.audio_url,
+                    );
+                    if !wait_for_podcast_ready(&f_play_start, player, &episode.audio_url) {
+                        if let Err(err) = player.pause() {
+                            println!("ERROR: Pausa podcast dopo timeout fallita: {}", err);
+                            append_podcast_log(&format!(
+                                "start_action.play.cleanup_error audio_url={} error={}",
+                                episode.audio_url, err
+                            ));
+                        }
+                        podcast_state.status = PlaybackStatus::Stopped;
+                        return;
+                    }
+                }
 
-                    b_p_label.set_label(&play_button_label(PlaybackStatus::Playing, false));
-                    pb.status = PlaybackStatus::Playing;
-                    pb.download_finished = false;
-                    pb.refresh_requested = false;
+                podcast_state.current_audio_url = episode.audio_url.clone();
+                podcast_state.status = PlaybackStatus::Playing;
+                append_podcast_log(&format!(
+                    "start_action.completed audio_url={} new_status={:?}",
+                    episode.audio_url, podcast_state.status
+                ));
+                return;
+            }
 
-                    let rt_thread = Arc::clone(&rt_p);
-                    let pb_thread = Arc::clone(&pb_p);
-                    let s_thread = Arc::clone(&s_play);
+            stop_podcast_playback(&podcast_playback_start);
+            let mut pb = pb_p_start.lock().unwrap();
+            if pb.status != PlaybackStatus::Stopped {
+                return;
+            }
 
-                    std::thread::spawn(move || {
-                        if let Ok((_stream, handle)) = OutputStream::try_default()
-                            && let Ok(sink) = Sink::try_new(&handle)
-                        {
-                            let mut sink_arc = Arc::new(sink);
-                            let mut edge_session = None;
-                            {
-                                let mut pb_lock = pb_thread.lock().unwrap();
-                                pb_lock.sink = Some(Arc::clone(&sink_arc));
-                            }
+            let text = tc_p_start.get_value();
+            if text.trim().is_empty() {
+                return;
+            }
 
-                            // In riproduzione live usiamo chunk più piccoli per applicare prima i cambi di voce/rate/pitch/volume.
-                            let chunks: Vec<String> =
-                                edge_tts::split_text_realtime_lazy(&text).collect();
+            pb.status = PlaybackStatus::Playing;
+            pb.download_finished = false;
+            pb.refresh_requested = false;
 
-                            for chunk in chunks {
-                                let mut replay_chunk = true;
-                                while replay_chunk {
-                                    replay_chunk = false;
-                                    // Evita di scaricare e mettere in coda tutto il libro.
-                                    // Mantenendo solo 1 blocco in coda, le modifiche agli slider si applicano al chunk successivo.
-                                    loop {
-                                        {
-                                            let mut pb_lock = pb_thread.lock().unwrap();
-                                            if pb_lock.status == PlaybackStatus::Stopped {
-                                                break;
-                                            }
-                                            if pb_lock.refresh_requested {
-                                                pb_lock.refresh_requested = false;
-                                                if let Ok(new_sink) = Sink::try_new(&handle) {
-                                                    sink_arc = Arc::new(new_sink);
-                                                    pb_lock.sink = Some(Arc::clone(&sink_arc));
-                                                }
-                                            }
-                                        }
-                                        if sink_arc.len() < 1 {
-                                            break;
-                                        }
-                                        std::thread::sleep(std::time::Duration::from_millis(100));
+            let rt_thread = Arc::clone(&rt_p_start);
+            let pb_thread = Arc::clone(&pb_p_start);
+            let s_thread = Arc::clone(&s_play_start);
+
+            std::thread::spawn(move || {
+                if let Ok((_stream, handle)) = OutputStream::try_default()
+                    && let Ok(sink) = Sink::try_new(&handle)
+                {
+                    let mut sink_arc = Arc::new(sink);
+                    let mut edge_session = None;
+                    {
+                        let mut pb_lock = pb_thread.lock().unwrap();
+                        pb_lock.sink = Some(Arc::clone(&sink_arc));
+                    }
+
+                    let chunks: Vec<String> = edge_tts::split_text_realtime_lazy(&text).collect();
+
+                    for chunk in chunks {
+                        let mut replay_chunk = true;
+                        while replay_chunk {
+                            replay_chunk = false;
+                            loop {
+                                {
+                                    let mut pb_lock = pb_thread.lock().unwrap();
+                                    if pb_lock.status == PlaybackStatus::Stopped {
+                                        break;
                                     }
-
-                                    {
-                                        let pb_lock = pb_thread.lock().unwrap();
-                                        if pb_lock.status == PlaybackStatus::Stopped {
-                                            break;
-                                        }
-                                    }
-
-                                    // Leggiamo i settaggi freschi per ogni blocco! (Aggiornamento immediato in lettura)
-                                    let (voice, rate, pitch, volume) = {
-                                        let s = s_thread.lock().unwrap();
-                                        (s.voice.clone(), s.rate, s.pitch, s.volume)
-                                    };
-
-                                    match rt_thread.block_on(
-                                        edge_tts::synthesize_realtime_chunk_with_retry(
-                                            edge_session,
-                                            &chunk,
-                                            &voice,
-                                            rate,
-                                            pitch,
-                                            volume,
-                                            3,
-                                        ),
-                                    ) {
-                                        Ok((data, session)) => {
-                                            edge_session = session;
-                                            if data.is_empty() {
-                                                break;
-                                            }
-                                            if let Ok(source) = Decoder::new(Cursor::new(data)) {
-                                                sink_arc.append(source);
-                                            }
-                                        }
-                                        Err(err) => {
-                                            edge_session = None;
-                                            println!("ERROR: Sintesi realtime fallita: {}", err);
-                                            break;
-                                        }
-                                    }
-
-                                    loop {
-                                        std::thread::sleep(std::time::Duration::from_millis(60));
-                                        let mut pb_lock = pb_thread.lock().unwrap();
-                                        if pb_lock.status == PlaybackStatus::Stopped {
-                                            break;
-                                        }
-                                        if pb_lock.refresh_requested {
-                                            pb_lock.refresh_requested = false;
-                                            if let Ok(new_sink) = Sink::try_new(&handle) {
-                                                sink_arc = Arc::new(new_sink);
-                                                pb_lock.sink = Some(Arc::clone(&sink_arc));
-                                            }
-                                            edge_session = None;
-                                            replay_chunk = true;
-                                            break;
-                                        }
-                                        if sink_arc.empty() {
-                                            break;
+                                    if pb_lock.refresh_requested {
+                                        pb_lock.refresh_requested = false;
+                                        if let Ok(new_sink) = Sink::try_new(&handle) {
+                                            sink_arc = Arc::new(new_sink);
+                                            pb_lock.sink = Some(Arc::clone(&sink_arc));
                                         }
                                     }
                                 }
+                                if sink_arc.len() < 1 {
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(100));
                             }
 
                             {
-                                let mut pb_lock = pb_thread.lock().unwrap();
-                                pb_lock.download_finished = true;
+                                let pb_lock = pb_thread.lock().unwrap();
+                                if pb_lock.status == PlaybackStatus::Stopped {
+                                    break;
+                                }
                             }
 
-                            // ATTESA FINE AUDIO
+                            let (voice, rate, pitch, volume) = {
+                                let s = s_thread.lock().unwrap();
+                                (s.voice.clone(), s.rate, s.pitch, s.volume)
+                            };
+
+                            match rt_thread.block_on(
+                                edge_tts::synthesize_realtime_chunk_with_retry(
+                                    edge_session,
+                                    &chunk,
+                                    &voice,
+                                    rate,
+                                    pitch,
+                                    volume,
+                                    3,
+                                ),
+                            ) {
+                                Ok((data, session)) => {
+                                    edge_session = session;
+                                    if data.is_empty() {
+                                        break;
+                                    }
+                                    if let Ok(source) = Decoder::new(Cursor::new(data)) {
+                                        sink_arc.append(source);
+                                    }
+                                }
+                                Err(err) => {
+                                    edge_session = None;
+                                    println!("ERROR: Sintesi realtime fallita: {}", err);
+                                    break;
+                                }
+                            }
+
                             loop {
-                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                std::thread::sleep(std::time::Duration::from_millis(60));
                                 let mut pb_lock = pb_thread.lock().unwrap();
                                 if pb_lock.status == PlaybackStatus::Stopped {
                                     break;
                                 }
-                                if sink_arc.empty() && pb_lock.download_finished {
-                                    pb_lock.status = PlaybackStatus::Stopped;
-                                    pb_lock.sink = None;
+                                if pb_lock.refresh_requested {
+                                    pb_lock.refresh_requested = false;
+                                    if let Ok(new_sink) = Sink::try_new(&handle) {
+                                        sink_arc = Arc::new(new_sink);
+                                        pb_lock.sink = Some(Arc::clone(&sink_arc));
+                                    }
+                                    edge_session = None;
+                                    replay_chunk = true;
+                                    break;
+                                }
+                                if sink_arc.empty() {
                                     break;
                                 }
                             }
                         }
-                    });
-                }
-            }
-        });
-
-        let playback_start = Arc::clone(&playback);
-        let podcast_playback_start = Rc::clone(&podcast_playback);
-        let start_action: Rc<dyn Fn()> = {
-            let play_action = Rc::clone(&play_action);
-            Rc::new(move || {
-                let (podcast_mode, podcast_status) = {
-                    let podcast_state = podcast_playback_start.borrow();
-                    (
-                        podcast_state.selected_episode.is_some(),
-                        podcast_state.status,
-                    )
-                };
-                if podcast_mode {
-                    if podcast_status == PlaybackStatus::Stopped {
-                        play_action();
                     }
-                    return;
-                }
 
-                if playback_start.lock().unwrap().status == PlaybackStatus::Stopped {
-                    play_action();
+                    {
+                        let mut pb_lock = pb_thread.lock().unwrap();
+                        pb_lock.download_finished = true;
+                    }
+
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        let mut pb_lock = pb_thread.lock().unwrap();
+                        if pb_lock.status == PlaybackStatus::Stopped {
+                            break;
+                        }
+                        if sink_arc.empty() && pb_lock.download_finished {
+                            pb_lock.status = PlaybackStatus::Stopped;
+                            pb_lock.sink = None;
+                            break;
+                        }
+                    }
                 }
-            })
-        };
+            });
+        });
 
         let start_action_click = Rc::clone(&start_action);
         btn_start.on_click(move |_| {

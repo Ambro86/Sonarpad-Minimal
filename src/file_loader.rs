@@ -323,12 +323,13 @@ import Foundation
 import PDFKit
 import Vision
 
-func appendPageText(_ text: String, to output: inout String) {
+func appendPageText(_ text: String, pageNumber: Int, to output: inout String) {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
     if !output.isEmpty {
         output.append("\n\n")
     }
+    output.append("Pagina \(pageNumber)\n")
     output.append(trimmed)
 }
 
@@ -393,7 +394,7 @@ for index in 0..<document.pageCount {
         }
         if let embedded = page.string,
            !embedded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendPageText(embedded, to: &output)
+            appendPageText(embedded, pageNumber: index + 1, to: &output)
             return
         }
         guard let image = renderPageImage(page) else {
@@ -401,7 +402,7 @@ for index in 0..<document.pageCount {
         }
         do {
             let recognized = try recognizePageText(image)
-            appendPageText(recognized, to: &output)
+            appendPageText(recognized, pageNumber: index + 1, to: &output)
         } catch {
             fputs("vision OCR failed: \(error)\n", stderr)
         }
