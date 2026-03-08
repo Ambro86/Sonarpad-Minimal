@@ -3684,6 +3684,21 @@ fn main() {
 
         #[cfg(target_os = "macos")]
         {
+            let play_action_menu = Rc::clone(&play_action);
+            let stop_action_menu = Rc::clone(&stop_action);
+            let save_action_menu = Rc::clone(&save_action);
+            let settings_action_menu = Rc::clone(&settings_action);
+            frame.on_menu(move |event| match event.get_id() {
+                ID_PLAY_PAUSE => play_action_menu(),
+                ID_STOP => stop_action_menu(),
+                ID_SAVE => save_action_menu(),
+                ID_SETTINGS => settings_action_menu(),
+                _ => {}
+            });
+        }
+
+        #[cfg(target_os = "macos")]
+        {
             let play_action_shortcut = Rc::clone(&play_action);
             let stop_action_shortcut = Rc::clone(&stop_action);
             let save_action_shortcut = Rc::clone(&save_action);
