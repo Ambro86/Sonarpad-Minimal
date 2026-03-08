@@ -363,23 +363,50 @@ fn handle_shortcut_event(
         {
             let key_code = key_event.get_key_code().unwrap_or_default();
             let unicode_key = key_event.get_unicode_key().unwrap_or_default();
+            append_podcast_log(&format!(
+                "mac_shortcut.key_down key_code={} unicode_key={} cmd_down={} meta_down={} alt_down={} shift_down={}",
+                key_code,
+                unicode_key,
+                key_event.cmd_down(),
+                key_event.meta_down(),
+                key_event.alt_down(),
+                key_event.shift_down()
+            ));
             if command_shortcut_down(key_event) && !key_event.alt_down() && !key_event.shift_down()
             {
                 match key_code {
+                    _ if matches_ascii_key(key_code, unicode_key, 'l') => {
+                        append_podcast_log("mac_shortcut.trigger start");
+                        (actions.start)();
+                        return;
+                    }
+                    _ if matches_ascii_key(key_code, unicode_key, 'p') => {
+                        append_podcast_log("mac_shortcut.trigger play_pause");
+                        (actions.play_pause)();
+                        return;
+                    }
                     WXK_LEFT => {
                         if podcast_seek_back.borrow().selected_episode.is_some() {
+                            append_podcast_log("mac_shortcut.trigger seek_back");
                             seek_podcast_playback(podcast_seek_back, -PODCAST_SEEK_SECONDS);
                         }
                         return;
                     }
                     WXK_RIGHT => {
                         if podcast_seek_forward.borrow().selected_episode.is_some() {
+                            append_podcast_log("mac_shortcut.trigger seek_forward");
                             seek_podcast_playback(podcast_seek_forward, PODCAST_SEEK_SECONDS);
                         }
                         return;
                     }
                     _ if matches_ascii_key(key_code, unicode_key, '.') => {
+                        append_podcast_log("mac_shortcut.trigger stop");
                         (actions.stop)();
+                        return;
+                    }
+                    _ if matches_ascii_key(key_code, unicode_key, ',') => {
+                        append_podcast_log("mac_shortcut.trigger settings");
+                        (actions.settings)();
                         return;
                     }
                     _ => {}
@@ -389,9 +416,11 @@ fn handle_shortcut_event(
                 && !key_event.shift_down()
                 && matches_ascii_key(key_code, unicode_key, 'a')
             {
+                append_podcast_log("mac_shortcut.trigger save");
                 (actions.save)();
                 return;
             }
+            append_podcast_log("mac_shortcut.pass_through");
             event.skip(true);
             return;
         }
@@ -2916,14 +2945,14 @@ fn main() {
         #[cfg(target_os = "macos")]
         let start_menu_item = file_menu.append(
             ID_START_PLAYBACK,
-            "Avvia lettura\tCmd+L",
+            "Avvia lettura (Cmd+L)",
             "Avvia la lettura o la riproduzione del podcast",
             ItemKind::Normal,
         );
         #[cfg(target_os = "macos")]
         let play_menu_item = file_menu.append(
             ID_PLAY_PAUSE,
-            "Pausa o riprendi lettura\tCmd+P",
+            "Pausa o riprendi lettura (Cmd+P)",
             "Mette in pausa o riprende la lettura",
             ItemKind::Normal,
         );
@@ -2944,7 +2973,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         let settings_menu_item = file_menu.append(
             ID_SETTINGS,
-            "Impostazioni\tCmd+,",
+            "Impostazioni (Cmd+,)",
             "Apre le impostazioni",
             ItemKind::Normal,
         );
