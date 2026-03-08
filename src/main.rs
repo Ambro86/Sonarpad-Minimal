@@ -344,7 +344,7 @@ fn settings_button_label() -> String {
 
 #[cfg(target_os = "macos")]
 fn command_shortcut_down(key_event: &KeyboardEvent) -> bool {
-    key_event.cmd_down() || key_event.meta_down()
+    key_event.cmd_down()
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -366,8 +366,8 @@ fn handle_shortcut_event(
             if command_shortcut_down(&key_event) && !key_event.alt_down() && !key_event.shift_down()
             {
                 match key_code {
-                    76 | 108 => (actions.start)(),
-                    80 | 112 => (actions.play_pause)(),
+                    _ if matches_ascii_key(key_code, unicode_key, 'l') => (actions.start)(),
+                    _ if matches_ascii_key(key_code, unicode_key, 'p') => (actions.play_pause)(),
                     WXK_LEFT => {
                         if podcast_seek_back.borrow().selected_episode.is_some() {
                             seek_podcast_playback(podcast_seek_back, -PODCAST_SEEK_SECONDS);
@@ -378,8 +378,8 @@ fn handle_shortcut_event(
                             seek_podcast_playback(podcast_seek_forward, PODCAST_SEEK_SECONDS);
                         }
                     }
-                    _ if unicode_key == 46 => (actions.stop)(),
-                    _ if unicode_key == 44 => (actions.settings)(),
+                    _ if matches_ascii_key(key_code, unicode_key, '.') => (actions.stop)(),
+                    _ if matches_ascii_key(key_code, unicode_key, ',') => (actions.settings)(),
                     _ => {}
                 }
             } else if command_shortcut_down(&key_event)
@@ -387,7 +387,7 @@ fn handle_shortcut_event(
                 && !key_event.shift_down()
             {
                 match key_code {
-                    65 | 97 => (actions.save)(),
+                    _ if matches_ascii_key(key_code, unicode_key, 'a') => (actions.save)(),
                     _ => {}
                 }
             }
@@ -427,6 +427,18 @@ fn handle_shortcut_event(
             }
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn matches_ascii_key(key_code: i32, unicode_key: i32, expected: char) -> bool {
+    let expected_upper = expected.to_ascii_uppercase() as i32;
+    let expected_lower = expected.to_ascii_lowercase() as i32;
+
+    matches!(key_code, code if code == expected_upper || code == expected_lower)
+        || matches!(
+            unicode_key,
+            code if code == expected_upper || code == expected_lower
+        )
 }
 
 fn about_title() -> &'static str {
