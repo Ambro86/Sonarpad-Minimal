@@ -358,26 +358,41 @@ fn handle_shortcut_event(
     podcast_seek_back: &Rc<RefCell<PodcastPlaybackState>>,
     podcast_seek_forward: &Rc<RefCell<PodcastPlaybackState>>,
 ) {
-    if let WindowEventData::Keyboard(key_event) = event {
+    if let WindowEventData::Keyboard(key_event) = &event {
         #[cfg(target_os = "macos")]
         {
-            let _ = actions;
-            if command_shortcut_down(&key_event) && !key_event.alt_down() && !key_event.shift_down()
+            let key_code = key_event.get_key_code().unwrap_or_default();
+            let unicode_key = key_event.get_unicode_key().unwrap_or_default();
+            if command_shortcut_down(key_event) && !key_event.alt_down() && !key_event.shift_down()
             {
-                match key_event.get_key_code().unwrap_or_default() {
+                match key_code {
                     WXK_LEFT => {
                         if podcast_seek_back.borrow().selected_episode.is_some() {
                             seek_podcast_playback(podcast_seek_back, -PODCAST_SEEK_SECONDS);
                         }
+                        return;
                     }
                     WXK_RIGHT => {
                         if podcast_seek_forward.borrow().selected_episode.is_some() {
                             seek_podcast_playback(podcast_seek_forward, PODCAST_SEEK_SECONDS);
                         }
+                        return;
+                    }
+                    _ if matches_ascii_key(key_code, unicode_key, '.') => {
+                        (actions.stop)();
+                        return;
                     }
                     _ => {}
                 }
+            } else if command_shortcut_down(key_event)
+                && key_event.alt_down()
+                && !key_event.shift_down()
+                && matches_ascii_key(key_code, unicode_key, 'a')
+            {
+                (actions.save)();
+                return;
             }
+            event.skip(true);
             return;
         }
 
@@ -386,7 +401,7 @@ fn handle_shortcut_event(
         #[cfg(not(target_os = "macos"))]
         let unicode_key = key_event.get_unicode_key().unwrap_or_default();
         #[cfg(not(target_os = "macos"))]
-        if command_shortcut_down(&key_event) && !key_event.alt_down() && !key_event.shift_down() {
+        if command_shortcut_down(key_event) && !key_event.alt_down() && !key_event.shift_down() {
             match key_code {
                 76 | 108 => (actions.start)(),
                 80 | 112 => (actions.play_pause)(),
@@ -404,7 +419,7 @@ fn handle_shortcut_event(
                 _ if unicode_key == 44 => (actions.settings)(),
                 _ => {}
             }
-        } else if command_shortcut_down(&key_event)
+        } else if command_shortcut_down(key_event)
             && key_event.alt_down()
             && !key_event.shift_down()
         {
@@ -414,6 +429,18 @@ fn handle_shortcut_event(
             }
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn matches_ascii_key(key_code: i32, unicode_key: i32, expected: char) -> bool {
+    let expected_upper = expected.to_ascii_uppercase() as i32;
+    let expected_lower = expected.to_ascii_lowercase() as i32;
+
+    matches!(key_code, code if code == expected_upper || code == expected_lower)
+        || matches!(
+            unicode_key,
+            code if code == expected_upper || code == expected_lower
+        )
 }
 
 fn about_title() -> &'static str {
@@ -2903,14 +2930,14 @@ fn main() {
         #[cfg(target_os = "macos")]
         let stop_menu_item = file_menu.append(
             ID_STOP,
-            "Ferma lettura\tCmd+.",
+            "Ferma lettura (Cmd+.)",
             "Ferma la lettura o il podcast",
             ItemKind::Normal,
         );
         #[cfg(target_os = "macos")]
         let save_menu_item = file_menu.append(
             ID_SAVE,
-            "Salva audiolibro\tCmd+Option+A",
+            "Salva audiolibro (Cmd+Option+A)",
             "Salva il testo corrente come audiolibro",
             ItemKind::Normal,
         );
