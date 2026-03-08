@@ -216,7 +216,25 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "${MOUNT_DIR}/Sonarpad.app"
           hdiutil detach "${MOUNT_DIR}" -quiet
 
-      - name: Upload artifacts
+      - name: Upload artifacts (attempt 1)
+        id: upload_artifact_attempt_1
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.dmg_name }}
+
+      - name: Upload artifacts (attempt 2)
+        id: upload_artifact_attempt_2
+        if: steps.upload_artifact_attempt_1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.dmg_name }}
+
+      - name: Upload artifacts (attempt 3)
+        if: steps.upload_artifact_attempt_1.outcome == 'failure' && steps.upload_artifact_attempt_2.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}

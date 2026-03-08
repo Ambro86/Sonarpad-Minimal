@@ -4235,7 +4235,49 @@ fn main() {
             };
             let podcast_seek_back_shortcut = Rc::clone(&podcast_playback);
             let podcast_seek_forward_shortcut = Rc::clone(&podcast_playback);
+            frame.on_char(move |event| {
+                handle_shortcut_event(
+                    event,
+                    &shortcut_actions,
+                    &podcast_seek_back_shortcut,
+                    &podcast_seek_forward_shortcut,
+                );
+            });
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let shortcut_actions = ShortcutActions {
+                start: Rc::clone(&start_action),
+                play_pause: Rc::clone(&play_action),
+                stop: Rc::clone(&stop_action),
+                save: Rc::clone(&save_action),
+                settings: Rc::clone(&settings_action),
+            };
+            let podcast_seek_back_shortcut = Rc::clone(&podcast_playback);
+            let podcast_seek_forward_shortcut = Rc::clone(&podcast_playback);
             text_ctrl.on_key_down(move |event| {
+                handle_shortcut_event(
+                    event,
+                    &shortcut_actions,
+                    &podcast_seek_back_shortcut,
+                    &podcast_seek_forward_shortcut,
+                );
+            });
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let shortcut_actions = ShortcutActions {
+                start: Rc::clone(&start_action),
+                play_pause: Rc::clone(&play_action),
+                stop: Rc::clone(&stop_action),
+                save: Rc::clone(&save_action),
+                settings: Rc::clone(&settings_action),
+            };
+            let podcast_seek_back_shortcut = Rc::clone(&podcast_playback);
+            let podcast_seek_forward_shortcut = Rc::clone(&podcast_playback);
+            text_ctrl.on_char(move |event| {
                 handle_shortcut_event(
                     event,
                     &shortcut_actions,
