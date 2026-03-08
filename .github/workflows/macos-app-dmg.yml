@@ -113,7 +113,7 @@ jobs:
         run: |
           set -euxo pipefail
 
-          APP_NAME="Sonarpad Minimal"
+          APP_NAME="Sonarpad"
           BIN_NAME="sonarpad-minimal"
           STAGE_DIR="dist/stage"
           APP_DIR="${STAGE_DIR}/${APP_NAME}.app"
@@ -138,19 +138,19 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>CFBundleName</key>
-            <string>Sonarpad Minimal</string>
+            <string>Sonarpad</string>
             <key>CFBundleDisplayName</key>
-            <string>Sonarpad Minimal</string>
+            <string>Sonarpad</string>
             <key>CFBundleIdentifier</key>
             <string>com.sonarpad.minimal</string>
           <key>CFBundleVersion</key>
-          <string>0.2.0</string>
+          <string>0.2.1</string>
           <key>CFBundleShortVersionString</key>
-          <string>0.2.0</string>
+          <string>0.2.1</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleExecutable</key>
-            <string>Sonarpad Minimal</string>
+            <string>Sonarpad</string>
             <key>LSMinimumSystemVersion</key>
             <string>12.0</string>
             <key>NSAppTransportSecurity</key>
@@ -176,7 +176,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          APP_BIN="dist/stage/Sonarpad Minimal.app/Contents/MacOS/Sonarpad Minimal"
+          APP_BIN="dist/stage/Sonarpad.app/Contents/MacOS/Sonarpad"
           LOG_FILE="$(mktemp)"
           "${APP_BIN}" >"${LOG_FILE}" 2>&1 &
           APP_PID=$!
@@ -194,7 +194,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          APP_NAME="Sonarpad Minimal"
+          APP_NAME="Sonarpad"
           STAGE_DIR="dist/stage"
           DMG_SRC_DIR="dist/dmg-src"
           mkdir -p dist
@@ -210,10 +210,10 @@ jobs:
           DMG_PATH="dist/${{ matrix.dmg_name }}"
           MOUNT_DIR="$(mktemp -d)"
           hdiutil attach "${DMG_PATH}" -mountpoint "${MOUNT_DIR}" -nobrowse -quiet
-          test -d "${MOUNT_DIR}/Sonarpad Minimal.app"
-          test -f "${MOUNT_DIR}/Sonarpad Minimal.app/Contents/Frameworks/libpdfium.dylib"
-          find "${MOUNT_DIR}/Sonarpad Minimal.app/Contents/Frameworks" -type f -name 'libcurl*.dylib' | grep .
-          codesign --verify --deep --strict --verbose=2 "${MOUNT_DIR}/Sonarpad Minimal.app"
+          test -d "${MOUNT_DIR}/Sonarpad.app"
+          test -f "${MOUNT_DIR}/Sonarpad.app/Contents/Frameworks/libpdfium.dylib"
+          find "${MOUNT_DIR}/Sonarpad.app/Contents/Frameworks" -type f -name 'libcurl*.dylib' | grep .
+          codesign --verify --deep --strict --verbose=2 "${MOUNT_DIR}/Sonarpad.app"
           hdiutil detach "${MOUNT_DIR}" -quiet
 
       - name: Upload artifacts

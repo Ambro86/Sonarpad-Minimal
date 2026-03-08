@@ -489,6 +489,15 @@ fn normalize_pdf_paragraphs(text: &str) -> String {
             last_line.clear();
             continue;
         }
+        if is_pdf_page_marker(line) {
+            flush_pdf_paragraph(&mut out, &mut current);
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(line);
+            last_line.clear();
+            continue;
+        }
         if current.is_empty() {
             current.push_str(line);
             last_line.clear();
@@ -535,6 +544,13 @@ fn flush_pdf_paragraph(out: &mut String, current: &mut String) {
     }
     out.push_str(current.trim());
     current.clear();
+}
+
+fn is_pdf_page_marker(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("Pagina ") else {
+        return false;
+    };
+    !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn should_break_pdf_paragraph(prev: &str, next: &str, avg_len: usize) -> bool {

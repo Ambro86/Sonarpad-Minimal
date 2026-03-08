@@ -361,10 +361,13 @@ fn handle_shortcut_event(
     if let WindowEventData::Keyboard(key_event) = event {
         #[cfg(target_os = "macos")]
         {
-            let _ = actions;
+            let key_code = key_event.get_key_code().unwrap_or_default();
+            let unicode_key = key_event.get_unicode_key().unwrap_or_default();
             if command_shortcut_down(&key_event) && !key_event.alt_down() && !key_event.shift_down()
             {
-                match key_event.get_key_code().unwrap_or_default() {
+                match key_code {
+                    76 | 108 => (actions.start)(),
+                    80 | 112 => (actions.play_pause)(),
                     WXK_LEFT => {
                         if podcast_seek_back.borrow().selected_episode.is_some() {
                             seek_podcast_playback(podcast_seek_back, -PODCAST_SEEK_SECONDS);
@@ -375,6 +378,16 @@ fn handle_shortcut_event(
                             seek_podcast_playback(podcast_seek_forward, PODCAST_SEEK_SECONDS);
                         }
                     }
+                    _ if unicode_key == 46 => (actions.stop)(),
+                    _ if unicode_key == 44 => (actions.settings)(),
+                    _ => {}
+                }
+            } else if command_shortcut_down(&key_event)
+                && key_event.alt_down()
+                && !key_event.shift_down()
+            {
+                match key_code {
+                    65 | 97 => (actions.save)(),
                     _ => {}
                 }
             }
@@ -694,7 +707,20 @@ fn check_for_updates(parent: &Frame) {
     match fetch_latest_release_version() {
         Ok(latest_version) => {
             if is_newer_version(&latest_version, current_version) {
-                if let Err(err) = open_url_in_browser(latest_download_url_for_current_platform()) {
+                let dialog = MessageDialog::builder(
+                    parent,
+                    &format!(
+                        "È disponibile la versione {}.\n\nVuoi scaricarla ora?",
+                        latest_version
+                    ),
+                    "Aggiornamenti",
+                )
+                .with_style(MessageDialogStyle::YesNo | MessageDialogStyle::IconQuestion)
+                .build();
+                if dialog.show_modal() == ID_YES
+                    && let Err(err) =
+                        open_url_in_browser(latest_download_url_for_current_platform())
+                {
                     show_message_dialog(
                         parent,
                         "Aggiornamenti",
@@ -2897,14 +2923,14 @@ fn main() {
         #[cfg(target_os = "macos")]
         let save_menu_item = file_menu.append(
             ID_SAVE,
-            "Salva audiolibro\tCtrl+Alt+A",
+            "Salva audiolibro\tCmd+Option+A",
             "Salva il testo corrente come audiolibro",
             ItemKind::Normal,
         );
         #[cfg(target_os = "macos")]
         let settings_menu_item = file_menu.append(
             ID_SETTINGS,
-            "Impostazioni\tCtrl+,",
+            "Impostazioni\tCmd+,",
             "Apre le impostazioni",
             ItemKind::Normal,
         );
