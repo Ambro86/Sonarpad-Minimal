@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell as ThreadRefCell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Cursor;
 #[cfg(any(target_os = "macos", windows))]
@@ -54,6 +55,7 @@ const ID_PODCAST_DIALOG_SAVE_AS: i32 = 4102;
 const ID_PODCASTS_CATEGORY_BASE: i32 = 2400;
 const ID_PODCASTS_SOURCE_BASE: i32 = 2600;
 const ID_PODCASTS_EPISODE_BASE: i32 = 30000;
+const ID_PODCASTS_CATEGORY_PODCAST_BASE: i32 = 27000;
 const ID_ARTICLES_SOURCE_BASE: i32 = 2200;
 const ID_ARTICLES_ARTICLE_BASE: i32 = 10000;
 const MAX_MENU_ARTICLES_PER_SOURCE: usize = 30;
@@ -131,6 +133,8 @@ struct ArticleMenuState {
 struct PodcastMenuState {
     dirty: bool,
     loading_urls: HashSet<String>,
+    category_results: HashMap<u32, Vec<podcasts::PodcastSearchResult>>,
+    category_loading: HashSet<u32>,
 }
 
 struct PodcastPlaybackState {
@@ -1027,6 +1031,20 @@ fn decode_podcast_episode_menu_id(menu_id: i32) -> Option<(usize, usize)> {
     Some((source_index, episode_index))
 }
 
+fn podcasts_category_podcast_menu_id(category_index: usize, result_index: usize) -> i32 {
+    ID_PODCASTS_CATEGORY_PODCAST_BASE + (category_index as i32 * 100) + result_index as i32
+}
+
+fn decode_podcast_category_podcast_menu_id(menu_id: i32) -> Option<(usize, usize)> {
+    let max_menu_id =
+        ID_PODCASTS_CATEGORY_PODCAST_BASE + (podcasts::apple_categories_it().len() as i32 * 100);
+    if menu_id < ID_PODCASTS_CATEGORY_PODCAST_BASE || menu_id >= max_menu_id {
+        return None;
+    }
+    let offset = (menu_id - ID_PODCASTS_CATEGORY_PODCAST_BASE) as usize;
+    Some((offset / 100, offset % 100))
+}
+
 fn app_storage_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -1640,6 +1658,8 @@ fn rebuild_podcasts_menu(
     podcasts_menu: &Menu,
     settings: &Arc<Mutex<Settings>>,
     loading_urls: &HashSet<String>,
+    category_results: &HashMap<u32, Vec<podcasts::PodcastSearchResult>>,
+    category_loading: &HashSet<u32>,
 ) {
     for item in podcasts_menu.get_menu_items().into_iter().rev() {
         let _ = podcasts_menu.delete_item(&item);
@@ -1653,11 +1673,55 @@ fn rebuild_podcasts_menu(
     );
     let categories_menu = Menu::builder().build();
     for (index, category) in podcasts::apple_categories_it().iter().enumerate() {
-        let _ = categories_menu.append(
-            ID_PODCASTS_CATEGORY_BASE + index as i32,
+        let category_submenu = Menu::builder().build();
+        if category_loading.contains(&category.id) {
+            let placeholder_id = ID_PODCASTS_CATEGORY_BASE + index as i32;
+            let _ = category_submenu.append(
+                placeholder_id,
+                "Caricamento podcast...",
+                "Attendere il caricamento dei podcast della categoria",
+                ItemKind::Normal,
+            );
+            let _ = category_submenu.enable_item(placeholder_id, false);
+        } else if let Some(results) = category_results.get(&category.id) {
+            if results.is_empty() {
+                let placeholder_id = ID_PODCASTS_CATEGORY_BASE + index as i32;
+                let _ = category_submenu.append(
+                    placeholder_id,
+                    "Nessun podcast disponibile",
+                    "Nessun podcast disponibile per questa categoria",
+                    ItemKind::Normal,
+                );
+                let _ = category_submenu.enable_item(placeholder_id, false);
+            } else {
+                for (result_index, result) in results.iter().take(30).enumerate() {
+                    let label = if result.artist.trim().is_empty() {
+                        result.title.clone()
+                    } else {
+                        format!("{} - {}", result.title, result.artist)
+                    };
+                    let _ = category_submenu.append(
+                        podcasts_category_podcast_menu_id(index, result_index),
+                        &label,
+                        "Aggiungi questo podcast",
+                        ItemKind::Normal,
+                    );
+                }
+            }
+        } else {
+            let placeholder_id = ID_PODCASTS_CATEGORY_BASE + index as i32;
+            let _ = category_submenu.append(
+                placeholder_id,
+                "Caricamento podcast...",
+                "Attendere il caricamento dei podcast della categoria",
+                ItemKind::Normal,
+            );
+            let _ = category_submenu.enable_item(placeholder_id, false);
+        }
+        let _ = categories_menu.append_submenu(
+            category_submenu,
             &category.name,
             "Sfoglia i podcast della categoria",
-            ItemKind::Normal,
         );
     }
     let _ = podcasts_menu.append_submenu(
@@ -1877,6 +1941,38 @@ fn refresh_all_podcast_sources(
 
     for source_url in source_urls {
         refresh_single_podcast_source(source_url, rt, settings, podcast_menu_state);
+    }
+}
+
+fn refresh_all_podcast_categories(
+    rt: &Arc<Runtime>,
+    podcast_menu_state: &Arc<Mutex<PodcastMenuState>>,
+) {
+    for category in podcasts::apple_categories_it() {
+        {
+            let mut state = podcast_menu_state.lock().unwrap();
+            state.category_loading.insert(category.id);
+            state.dirty = true;
+        }
+
+        let rt_refresh = Arc::clone(rt);
+        let menu_state_refresh = Arc::clone(podcast_menu_state);
+        std::thread::spawn(move || {
+            let results = rt_refresh
+                .block_on(podcasts::search_itunes_category(category.id))
+                .unwrap_or_else(|err| {
+                    println!(
+                        "ERROR: Caricamento categoria podcast fallito per {}: {}",
+                        category.name, err
+                    );
+                    Vec::new()
+                });
+
+            let mut state = menu_state_refresh.lock().unwrap();
+            state.category_results.insert(category.id, results);
+            state.category_loading.remove(&category.id);
+            state.dirty = true;
+        });
     }
 }
 
@@ -2116,17 +2212,6 @@ fn open_podcast_search_results_dialog(
         .block_on(podcasts::search_itunes_podcasts(keyword))
         .ok()?;
     open_podcast_results_dialog(parent, "Scegli podcast", &results)
-}
-
-fn open_podcast_category_results_dialog(
-    parent: &Frame,
-    rt: &Arc<Runtime>,
-    category: &podcasts::PodcastCategory,
-) -> Option<podcasts::PodcastSearchResult> {
-    let results = rt
-        .block_on(podcasts::search_itunes_category(category.id))
-        .ok()?;
-    open_podcast_results_dialog(parent, &format!("Categoria: {}", category.name), &results)
 }
 
 fn open_podcast_results_dialog(
@@ -3011,6 +3096,8 @@ fn main() {
     let podcast_menu_state = Arc::new(Mutex::new(PodcastMenuState {
         dirty: true,
         loading_urls: HashSet::new(),
+        category_results: HashMap::new(),
+        category_loading: HashSet::new(),
     }));
     let podcast_playback = Rc::new(RefCell::new(PodcastPlaybackState {
         player: None,
@@ -3055,6 +3142,7 @@ fn main() {
 
     refresh_all_article_sources(&rt, &settings, &article_menu_state);
     refresh_all_podcast_sources(&rt, &settings, &podcast_menu_state);
+    refresh_all_podcast_categories(&rt, &podcast_menu_state);
 
     let _ = wxdragon::main(move |_| {
         let frame = Frame::builder()
@@ -3137,7 +3225,13 @@ fn main() {
         rebuild_articles_menu(&articles_menu, &settings, &HashSet::new());
         let articles_menu_timer = Menu::from(articles_menu.as_const_ptr());
         let podcasts_menu = Menu::builder().build();
-        rebuild_podcasts_menu(&podcasts_menu, &settings, &HashSet::new());
+        rebuild_podcasts_menu(
+            &podcasts_menu,
+            &settings,
+            &HashSet::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
         let podcasts_menu_timer = Menu::from(podcasts_menu.as_const_ptr());
 
         let menubar = MenuBar::builder()
@@ -3254,17 +3348,28 @@ fn main() {
                 rebuild_articles_menu(&articles_menu_timer, &settings_timer, &loading_urls);
             }
 
-            let podcast_loading_urls = {
+            let podcast_menu_snapshot = {
                 let mut podcast_state = podcast_menu_state_timer.lock().unwrap();
                 if podcast_state.dirty {
                     podcast_state.dirty = false;
-                    Some(podcast_state.loading_urls.clone())
+                    Some((
+                        podcast_state.loading_urls.clone(),
+                        podcast_state.category_results.clone(),
+                        podcast_state.category_loading.clone(),
+                    ))
                 } else {
                     None
                 }
             };
-            if let Some(loading_urls) = podcast_loading_urls {
-                rebuild_podcasts_menu(&podcasts_menu_timer, &settings_timer, &loading_urls);
+            if let Some((loading_urls, category_results, category_loading)) = podcast_menu_snapshot
+            {
+                rebuild_podcasts_menu(
+                    &podcasts_menu_timer,
+                    &settings_timer,
+                    &loading_urls,
+                    &category_results,
+                    &category_loading,
+                );
             }
         });
         timer.start(200, false);
@@ -3376,21 +3481,26 @@ fn main() {
                 {
                     delete_podcast_source(source_index, &settings_menu, &podcast_menu_state_menu);
                 }
-            } else if (ID_PODCASTS_CATEGORY_BASE
-                ..ID_PODCASTS_CATEGORY_BASE + podcasts::apple_categories_it().len() as i32)
-                .contains(&event.get_id())
+            } else if let Some((category_index, result_index)) =
+                decode_podcast_category_podcast_menu_id(event.get_id())
             {
-                let index = (event.get_id() - ID_PODCASTS_CATEGORY_BASE) as usize;
-                if let Some(category) = podcasts::apple_categories_it().get(index)
-                    && let Some(result) =
-                        open_podcast_category_results_dialog(&f_menu, &rt_articles_menu, category)
-                {
-                    add_podcast_source(
-                        result,
-                        &settings_menu,
-                        &podcast_menu_state_menu,
-                        &rt_articles_menu,
-                    );
+                if let Some(category) = podcasts::apple_categories_it().get(category_index) {
+                    let result = {
+                        let state = podcast_menu_state_menu.lock().unwrap();
+                        state
+                            .category_results
+                            .get(&category.id)
+                            .and_then(|results| results.get(result_index))
+                            .cloned()
+                    };
+                    if let Some(result) = result {
+                        add_podcast_source(
+                            result,
+                            &settings_menu,
+                            &podcast_menu_state_menu,
+                            &rt_articles_menu,
+                        );
+                    }
                 }
             } else if let Some((source_index, episode_index)) =
                 decode_podcast_episode_menu_id(event.get_id())
