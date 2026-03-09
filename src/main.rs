@@ -11,7 +11,7 @@ mod reader;
 use rodio::{Decoder, OutputStream, Sink};
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
-use std::cell::Cell;
+use std::cell::RefCell as ThreadRefCell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 #[cfg(any(target_os = "macos", windows))]
 use uuid::Uuid;
@@ -67,7 +69,7 @@ const APP_STORAGE_DIR_NAME: &str = "Sonarpad Minimal";
 
 #[cfg(target_os = "macos")]
 thread_local! {
-    static MAC_PENDING_COMMAND_SHORTCUT: Cell<bool> = const { Cell::new(false) };
+    static MAC_PENDING_COMMAND_SHORTCUT_AT: ThreadRefCell<Option<Instant>> = const { ThreadRefCell::new(None) };
 }
 
 #[cfg(target_os = "macos")]
@@ -372,8 +374,7 @@ fn handle_shortcut_event(
         {
             let key_code = key_event.get_key_code().unwrap_or_default();
             let unicode_key = key_event.get_unicode_key().unwrap_or_default();
-            let pending_command_shortcut =
-                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.get());
+            let pending_command_shortcut = mac_pending_command_shortcut_active();
             append_podcast_log(&format!(
                 "mac_shortcut.key_down key_code={} unicode_key={} cmd_down={} meta_down={} alt_down={} shift_down={} pending_cmd={}",
                 key_code,
@@ -385,7 +386,7 @@ fn handle_shortcut_event(
                 pending_command_shortcut
             ));
             if key_code == WXK_MAC_COMMAND && command_shortcut_down(key_event) {
-                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(true));
+                set_mac_pending_command_shortcut(true);
                 append_podcast_log("mac_shortcut.command_latched");
                 event.skip(true);
                 return;
@@ -393,7 +394,7 @@ fn handle_shortcut_event(
 
             if command_shortcut_down(key_event) && !key_event.alt_down() && !key_event.shift_down()
             {
-                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(false));
+                set_mac_pending_command_shortcut(false);
                 match key_code {
                     _ if matches_ascii_key(key_code, unicode_key, 'l') => {
                         append_podcast_log("mac_shortcut.trigger start");
@@ -436,7 +437,7 @@ fn handle_shortcut_event(
                 && !key_event.shift_down()
                 && matches_ascii_key(key_code, unicode_key, 'a')
             {
-                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(false));
+                set_mac_pending_command_shortcut(false);
                 append_podcast_log("mac_shortcut.trigger save");
                 (actions.save)();
                 return;
@@ -447,14 +448,10 @@ fn handle_shortcut_event(
                 && !key_event.shift_down()
                 && matches_ascii_key(key_code, unicode_key, '.')
             {
-                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(false));
+                set_mac_pending_command_shortcut(false);
                 append_podcast_log("mac_shortcut.trigger stop_latched");
                 (actions.stop)();
                 return;
-            }
-
-            if pending_command_shortcut && key_code != WXK_MAC_COMMAND {
-                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(false));
             }
             append_podcast_log("mac_shortcut.pass_through");
             event.skip(true);
@@ -506,6 +503,30 @@ fn matches_ascii_key(key_code: i32, unicode_key: i32, expected: char) -> bool {
             unicode_key,
             code if code == expected_upper || code == expected_lower
         )
+}
+
+#[cfg(target_os = "macos")]
+fn mac_pending_command_shortcut_active() -> bool {
+    const MAC_PENDING_COMMAND_SHORTCUT_WINDOW: Duration = Duration::from_millis(1500);
+
+    MAC_PENDING_COMMAND_SHORTCUT_AT.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        if let Some(at) = *pending {
+            if at.elapsed() <= MAC_PENDING_COMMAND_SHORTCUT_WINDOW {
+                return true;
+            }
+            *pending = None;
+        }
+        false
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn set_mac_pending_command_shortcut(active: bool) {
+    MAC_PENDING_COMMAND_SHORTCUT_AT.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        *pending = if active { Some(Instant::now()) } else { None };
+    });
 }
 
 fn about_title() -> &'static str {
