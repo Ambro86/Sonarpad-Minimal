@@ -65,11 +65,16 @@ const WXK_RIGHT: i32 = 316;
 #[cfg(target_os = "macos")]
 const WXK_MAC_COMMAND: i32 = 308;
 #[cfg(target_os = "macos")]
+const WXK_MAC_CMD_PERIOD_PREFIX: i32 = 396;
+#[cfg(target_os = "macos")]
+const WXK_MAC_CMD_PERIOD_SUFFIX: i32 = 315;
+#[cfg(target_os = "macos")]
 const APP_STORAGE_DIR_NAME: &str = "Sonarpad Minimal";
 
 #[cfg(target_os = "macos")]
 thread_local! {
     static MAC_PENDING_COMMAND_SHORTCUT_AT: ThreadRefCell<Option<Instant>> = const { ThreadRefCell::new(None) };
+    static MAC_PENDING_COMMAND_PERIOD_SEQUENCE_AT: ThreadRefCell<Option<Instant>> = const { ThreadRefCell::new(None) };
 }
 
 #[cfg(target_os = "macos")]
@@ -375,16 +380,25 @@ fn handle_shortcut_event(
             let key_code = key_event.get_key_code().unwrap_or_default();
             let unicode_key = key_event.get_unicode_key().unwrap_or_default();
             let pending_command_shortcut = mac_pending_command_shortcut_active();
+            let pending_command_period_sequence = mac_pending_command_period_sequence_active();
             append_podcast_log(&format!(
-                "mac_shortcut.key_down key_code={} unicode_key={} cmd_down={} meta_down={} alt_down={} shift_down={} pending_cmd={}",
+                "mac_shortcut.key_down key_code={} unicode_key={} cmd_down={} meta_down={} alt_down={} shift_down={} pending_cmd={} pending_cmd_period_seq={}",
                 key_code,
                 unicode_key,
                 key_event.cmd_down(),
                 key_event.meta_down(),
                 key_event.alt_down(),
                 key_event.shift_down(),
-                pending_command_shortcut
+                pending_command_shortcut,
+                pending_command_period_sequence
             ));
+            if key_code == WXK_MAC_CMD_PERIOD_PREFIX {
+                set_mac_pending_command_period_sequence(true);
+                append_podcast_log("mac_shortcut.cmd_period_prefix_latched");
+                event.skip(true);
+                return;
+            }
+
             if key_code == WXK_MAC_COMMAND && command_shortcut_down(key_event) {
                 set_mac_pending_command_shortcut(true);
                 append_podcast_log("mac_shortcut.command_latched");
@@ -450,6 +464,13 @@ fn handle_shortcut_event(
             {
                 set_mac_pending_command_shortcut(false);
                 append_podcast_log("mac_shortcut.trigger stop_latched");
+                (actions.stop)();
+                return;
+            }
+
+            if pending_command_period_sequence && key_code == WXK_MAC_CMD_PERIOD_SUFFIX {
+                set_mac_pending_command_period_sequence(false);
+                append_podcast_log("mac_shortcut.trigger stop_sequence");
                 (actions.stop)();
                 return;
             }
@@ -524,6 +545,30 @@ fn mac_pending_command_shortcut_active() -> bool {
 #[cfg(target_os = "macos")]
 fn set_mac_pending_command_shortcut(active: bool) {
     MAC_PENDING_COMMAND_SHORTCUT_AT.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        *pending = if active { Some(Instant::now()) } else { None };
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn mac_pending_command_period_sequence_active() -> bool {
+    const MAC_PENDING_COMMAND_PERIOD_SEQUENCE_WINDOW: Duration = Duration::from_millis(500);
+
+    MAC_PENDING_COMMAND_PERIOD_SEQUENCE_AT.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        if let Some(at) = *pending {
+            if at.elapsed() <= MAC_PENDING_COMMAND_PERIOD_SEQUENCE_WINDOW {
+                return true;
+            }
+            *pending = None;
+        }
+        false
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn set_mac_pending_command_period_sequence(active: bool) {
+    MAC_PENDING_COMMAND_PERIOD_SEQUENCE_AT.with(|pending| {
         let mut pending = pending.borrow_mut();
         *pending = if active { Some(Instant::now()) } else { None };
     });
