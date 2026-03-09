@@ -335,7 +335,7 @@ func appendPageText(_ text: String, pageNumber: Int, to output: inout String) {
 
 func renderPageImage(_ page: PDFPage) -> CGImage? {
     let bounds = page.bounds(for: .mediaBox)
-    let scale: CGFloat = 2.0
+    let scale: CGFloat = 3.0
     let width = max(Int(bounds.width * scale), 1)
     let height = max(Int(bounds.height * scale), 1)
     guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
@@ -360,6 +360,24 @@ func renderPageImage(_ page: PDFPage) -> CGImage? {
     page.draw(with: .mediaBox, to: context)
     context.restoreGState()
     return context.makeImage()
+}
+
+func preprocessImageForOCR(_ image: CGImage) -> CGImage? {
+    let ciImage = CIImage(cgImage: image)
+    let grayscale = ciImage.applyingFilter(
+        "CIColorControls",
+        parameters: [
+            kCIInputSaturationKey: 0.0,
+            kCIInputContrastKey: 1.35,
+            kCIInputBrightnessKey: 0.02
+        ]
+    )
+    let boosted = grayscale.applyingFilter(
+        "CIExposureAdjust",
+        parameters: [kCIInputEVKey: 0.3]
+    )
+    let context = CIContext(options: nil)
+    return context.createCGImage(boosted, from: boosted.extent)
 }
 
 func recognizePageText(_ image: CGImage) throws -> String {
@@ -400,8 +418,11 @@ for index in 0..<document.pageCount {
         guard let image = renderPageImage(page) else {
             return
         }
+        guard let processedImage = preprocessImageForOCR(image) else {
+            return
+        }
         do {
-            let recognized = try recognizePageText(image)
+            let recognized = try recognizePageText(processedImage)
             appendPageText(recognized, pageNumber: index + 1, to: &output)
         } catch {
             fputs("vision OCR failed: \(error)\n", stderr)

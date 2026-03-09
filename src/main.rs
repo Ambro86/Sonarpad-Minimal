@@ -787,10 +787,88 @@ fn save_downloaded_podcast_file(
 }
 
 fn confirm_delete_dialog(parent: &Frame, title: &str, message: &str) -> bool {
-    let dialog = MessageDialog::builder(parent, message, title)
-        .with_style(MessageDialogStyle::YesNo | MessageDialogStyle::IconQuestion)
+    let dialog = Dialog::builder(parent, title)
+        .with_style(DialogStyle::Caption | DialogStyle::SystemMenu | DialogStyle::CloseBox)
+        .with_size(460, 170)
         .build();
-    dialog.show_modal() == ID_YES
+    let panel = Panel::builder(&dialog).build();
+    let root = BoxSizer::builder(Orientation::Vertical).build();
+
+    let label = StaticText::builder(&panel).with_label(message).build();
+    root.add(&label, 1, SizerFlag::Expand | SizerFlag::All, 12);
+
+    let buttons = BoxSizer::builder(Orientation::Horizontal).build();
+    let yes_button = Button::builder(&panel)
+        .with_id(ID_YES)
+        .with_label("Sì")
+        .build();
+    let no_button = Button::builder(&panel)
+        .with_id(ID_NO)
+        .with_label("No")
+        .build();
+    buttons.add_spacer(1);
+    buttons.add(&yes_button, 0, SizerFlag::All, 10);
+    buttons.add(&no_button, 0, SizerFlag::All, 10);
+    root.add_sizer(&buttons, 0, SizerFlag::Expand, 0);
+
+    panel.set_sizer(root, true);
+    dialog.set_affirmative_id(ID_YES);
+    dialog.set_escape_id(ID_NO);
+
+    let dialog_yes = dialog;
+    yes_button.on_click(move |_| {
+        dialog_yes.end_modal(ID_YES);
+    });
+
+    let dialog_no = dialog;
+    no_button.on_click(move |_| {
+        dialog_no.end_modal(ID_NO);
+    });
+
+    let confirmed = dialog.show_modal() == ID_YES;
+    dialog.destroy();
+    confirmed
+}
+
+#[cfg(target_os = "macos")]
+fn should_load_file_with_progress(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn should_load_file_with_progress(_path: &Path) -> bool {
+    false
+}
+
+fn load_file_with_progress(parent: &Frame, path: &Path) -> Result<String, String> {
+    let progress =
+        ProgressDialog::builder(parent, "Apertura documento", "Analisi documento...", 100)
+            .with_style(ProgressDialogStyle::Smooth)
+            .build();
+    let state = Arc::new(Mutex::new(None::<Result<String, String>>));
+    let state_thread = Arc::clone(&state);
+    let path_buf = path.to_path_buf();
+    std::thread::spawn(move || {
+        let result = file_loader::load_any_file(&path_buf).map_err(|err| err.to_string());
+        *state_thread.lock().unwrap() = Some(result);
+    });
+
+    let mut progress_value = 0;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Some(result) = state.lock().unwrap().take() {
+            let _ = progress.update(100, Some("Documento caricato."));
+            return result;
+        }
+
+        progress_value = (progress_value + 4).min(95);
+        let _ = progress.update(progress_value, Some("Analisi PDF in corso..."));
+        if progress_value >= 95 {
+            progress_value = 20;
+        }
+    }
 }
 
 fn normalize_version_tag(tag: &str) -> String {
@@ -3399,9 +3477,17 @@ fn main() {
                 let dialog = FileDialog::builder(&f_menu).with_message("Apri").with_wildcard("Supportati|*.txt;*.doc;*.docx;*.pdf;*.epub;*.rtf;*.xlsx;*.xls;*.ods;*.html;*.htm|Tutti|*.*").build();
                 if dialog.show_modal() == ID_OK
                     && let Some(path) = dialog.get_path()
-                        && let Ok(c) = file_loader::load_any_file(Path::new(&path)) {
-                    podcast_selection_menu.borrow_mut().selected_episode = None;
-                    tc_menu.set_value(&c);
+                {
+                    let path = Path::new(&path);
+                    let content = if should_load_file_with_progress(path) {
+                        load_file_with_progress(&f_menu, path)
+                    } else {
+                        file_loader::load_any_file(path).map_err(|err| err.to_string())
+                    };
+                    if let Ok(c) = content {
+                        podcast_selection_menu.borrow_mut().selected_episode = None;
+                        tc_menu.set_value(&c);
+                    }
                 }
             } else if event.get_id() == ID_EXIT {
                 f_menu.close(true);
