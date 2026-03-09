@@ -10,6 +10,8 @@ mod reader;
 
 use rodio::{Decoder, OutputStream, Sink};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "macos")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -59,7 +61,14 @@ const AUDIOBOOK_SAVE_THREADS: usize = 8;
 const WXK_LEFT: i32 = 314;
 const WXK_RIGHT: i32 = 316;
 #[cfg(target_os = "macos")]
+const WXK_MAC_COMMAND: i32 = 308;
+#[cfg(target_os = "macos")]
 const APP_STORAGE_DIR_NAME: &str = "Sonarpad Minimal";
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static MAC_PENDING_COMMAND_SHORTCUT: Cell<bool> = const { Cell::new(false) };
+}
 
 #[cfg(target_os = "macos")]
 const MOD_CMD: &str = "Cmd";
@@ -363,17 +372,28 @@ fn handle_shortcut_event(
         {
             let key_code = key_event.get_key_code().unwrap_or_default();
             let unicode_key = key_event.get_unicode_key().unwrap_or_default();
+            let pending_command_shortcut =
+                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.get());
             append_podcast_log(&format!(
-                "mac_shortcut.key_down key_code={} unicode_key={} cmd_down={} meta_down={} alt_down={} shift_down={}",
+                "mac_shortcut.key_down key_code={} unicode_key={} cmd_down={} meta_down={} alt_down={} shift_down={} pending_cmd={}",
                 key_code,
                 unicode_key,
                 key_event.cmd_down(),
                 key_event.meta_down(),
                 key_event.alt_down(),
-                key_event.shift_down()
+                key_event.shift_down(),
+                pending_command_shortcut
             ));
+            if key_code == WXK_MAC_COMMAND && command_shortcut_down(key_event) {
+                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(true));
+                append_podcast_log("mac_shortcut.command_latched");
+                event.skip(true);
+                return;
+            }
+
             if command_shortcut_down(key_event) && !key_event.alt_down() && !key_event.shift_down()
             {
+                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(false));
                 match key_code {
                     _ if matches_ascii_key(key_code, unicode_key, 'l') => {
                         append_podcast_log("mac_shortcut.trigger start");
@@ -416,9 +436,25 @@ fn handle_shortcut_event(
                 && !key_event.shift_down()
                 && matches_ascii_key(key_code, unicode_key, 'a')
             {
+                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(false));
                 append_podcast_log("mac_shortcut.trigger save");
                 (actions.save)();
                 return;
+            }
+
+            if pending_command_shortcut
+                && !key_event.alt_down()
+                && !key_event.shift_down()
+                && matches_ascii_key(key_code, unicode_key, '.')
+            {
+                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(false));
+                append_podcast_log("mac_shortcut.trigger stop_latched");
+                (actions.stop)();
+                return;
+            }
+
+            if pending_command_shortcut && key_code != WXK_MAC_COMMAND {
+                MAC_PENDING_COMMAND_SHORTCUT.with(|pending| pending.set(false));
             }
             append_podcast_log("mac_shortcut.pass_through");
             event.skip(true);
