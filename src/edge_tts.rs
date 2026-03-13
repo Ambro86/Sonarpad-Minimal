@@ -478,6 +478,16 @@ fn normalize_for_tts(text: &str) -> String {
             continue;
         }
 
+        if pending_space
+            && ch.is_uppercase()
+            && out.ends_with('.')
+            && !out.ends_with("..")
+            && !out.ends_with(". ")
+        {
+            out.push(' ');
+            pending_space = false;
+        }
+
         if pending_space && !out.ends_with([' ', '\n']) {
             out.push(' ');
         }
@@ -520,19 +530,32 @@ pub fn split_sentences_lazy(text: &str) -> impl Iterator<Item = &str> {
             return None;
         }
         while let Some((idx, ch)) = iter.next() {
-            if matches!(ch, '.' | '!' | '?' | ':') {
+            if matches!(ch, '.' | '!' | '?' | ';' | ':') {
+                let next_ch = iter.peek().map(|(_, c)| *c);
+                if ch == '.' && matches!(next_ch, Some('.')) {
+                    continue;
+                }
                 let next_is_space = iter.peek().map(|(_, c)| c.is_whitespace()).unwrap_or(true);
                 if next_is_space {
                     let end = idx + ch.len_utf8();
-                    let sentence = &text[start..end];
-                    start = end;
-                    return Some(sentence);
+                    if end > start {
+                        let sentence = &text[start..end];
+                        if sentence.chars().any(|c| c.is_alphanumeric()) {
+                            start = end;
+                            return Some(sentence);
+                        }
+                        start = end;
+                    }
                 }
             }
         }
         let sentence = &text[start..];
         start = text.len();
-        Some(sentence)
+        if sentence.chars().any(|c| c.is_alphanumeric()) {
+            Some(sentence)
+        } else {
+            None
+        }
     })
 }
 
