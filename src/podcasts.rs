@@ -1,5 +1,6 @@
 use feed_rs::parser;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::Cursor;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -58,6 +59,26 @@ struct ItunesSearchItem {
     primary_genre_id: Option<u32>,
     #[serde(rename = "genreIds")]
     genre_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpreakerSearchResponse {
+    response: SpreakerSearchPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpreakerSearchPayload {
+    #[serde(default)]
+    items: Vec<SpreakerShowItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpreakerShowItem {
+    show_id: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    author_name: String,
 }
 
 pub fn normalize_url(input: &str) -> String {
@@ -155,6 +176,91 @@ pub fn apple_categories_it() -> Vec<PodcastCategory> {
     ]
 }
 
+pub fn apple_categories(ui_language: &str) -> Vec<PodcastCategory> {
+    if ui_language.eq_ignore_ascii_case("en") {
+        vec![
+            PodcastCategory {
+                id: 1301,
+                name: "Arts".to_string(),
+            },
+            PodcastCategory {
+                id: 1321,
+                name: "Business".to_string(),
+            },
+            PodcastCategory {
+                id: 1303,
+                name: "Comedy".to_string(),
+            },
+            PodcastCategory {
+                id: 1304,
+                name: "Education".to_string(),
+            },
+            PodcastCategory {
+                id: 1483,
+                name: "Fiction".to_string(),
+            },
+            PodcastCategory {
+                id: 1511,
+                name: "Government".to_string(),
+            },
+            PodcastCategory {
+                id: 1512,
+                name: "Health & Fitness".to_string(),
+            },
+            PodcastCategory {
+                id: 1487,
+                name: "History".to_string(),
+            },
+            PodcastCategory {
+                id: 1305,
+                name: "Kids & Family".to_string(),
+            },
+            PodcastCategory {
+                id: 1502,
+                name: "Leisure".to_string(),
+            },
+            PodcastCategory {
+                id: 1310,
+                name: "Music".to_string(),
+            },
+            PodcastCategory {
+                id: 1489,
+                name: "News".to_string(),
+            },
+            PodcastCategory {
+                id: 1314,
+                name: "Religion & Spirituality".to_string(),
+            },
+            PodcastCategory {
+                id: 1533,
+                name: "Science".to_string(),
+            },
+            PodcastCategory {
+                id: 1324,
+                name: "Society & Culture".to_string(),
+            },
+            PodcastCategory {
+                id: 1545,
+                name: "Sports".to_string(),
+            },
+            PodcastCategory {
+                id: 1318,
+                name: "Technology".to_string(),
+            },
+            PodcastCategory {
+                id: 1488,
+                name: "True Crime".to_string(),
+            },
+            PodcastCategory {
+                id: 1309,
+                name: "TV & Film".to_string(),
+            },
+        ]
+    } else {
+        apple_categories_it()
+    }
+}
+
 pub async fn search_itunes_podcasts(keyword: &str) -> Result<Vec<PodcastSearchResult>, String> {
     let trimmed = keyword.trim();
     if trimmed.is_empty() {
@@ -165,6 +271,69 @@ pub async fn search_itunes_podcasts(keyword: &str) -> Result<Vec<PodcastSearchRe
         "https://itunes.apple.com/search?media=podcast&entity=podcast&term={query}&country=it&limit=20"
     );
     fetch_itunes_results(&url).await
+}
+
+pub async fn search_podcasts(keyword: &str) -> Result<Vec<PodcastSearchResult>, String> {
+    let trimmed = keyword.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let (itunes_results, spreaker_results) = tokio::join!(
+        search_itunes_podcasts(trimmed),
+        search_spreaker_podcasts(trimmed)
+    );
+
+    let mut combined = itunes_results?;
+    combined.extend(spreaker_results?);
+    dedup_search_results(&mut combined);
+    Ok(combined)
+}
+
+async fn search_spreaker_podcasts(keyword: &str) -> Result<Vec<PodcastSearchResult>, String> {
+    let query: String = url::form_urlencoded::byte_serialize(keyword.trim().as_bytes()).collect();
+    let url = format!("https://api.spreaker.com/v2/search?q={query}&type=shows&limit=20");
+
+    let client = reqwest::Client::builder()
+        .user_agent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        )
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|err| err.to_string())?;
+
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|err| err.to_string())?
+        .error_for_status()
+        .map_err(|err| err.to_string())?
+        .bytes()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let parsed: SpreakerSearchResponse =
+        serde_json::from_slice(&bytes).map_err(|err| err.to_string())?;
+
+    Ok(parsed
+        .response
+        .items
+        .into_iter()
+        .filter(|item| !item.title.trim().is_empty())
+        .map(|item| PodcastSearchResult {
+            title: item.title,
+            artist: item.author_name,
+            feed_url: format!(
+                "https://www.spreaker.com/show/{}/episodes/feed",
+                item.show_id
+            ),
+            collection_id: None,
+        })
+        .collect())
 }
 
 pub async fn search_itunes_category(category_id: u32) -> Result<Vec<PodcastSearchResult>, String> {
@@ -544,4 +713,23 @@ fn itunes_item_matches_genre(item: &ItunesSearchItem, genre_id: u32) -> bool {
         return primary == genre_id;
     }
     false
+}
+
+fn dedup_search_results(results: &mut Vec<PodcastSearchResult>) {
+    let mut seen_feed_urls = HashSet::new();
+    let mut seen_titles = HashSet::new();
+    results.retain(|result| {
+        let feed_key = normalize_url(&result.feed_url).to_lowercase();
+        let title_key = format!(
+            "{}|{}",
+            result.title.trim().to_lowercase(),
+            result.artist.trim().to_lowercase()
+        );
+
+        if !feed_key.is_empty() && !seen_feed_urls.insert(feed_key) {
+            return false;
+        }
+
+        seen_titles.insert(title_key)
+    });
 }

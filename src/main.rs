@@ -21,6 +21,7 @@ use std::io::Cursor;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "macos")]
@@ -55,6 +56,8 @@ const ID_PODCASTS_REORDER_SOURCES: i32 = 2302;
 const ID_PODCASTS_SORT_SOURCES_ALPHABETICALLY: i32 = 2303;
 const ID_PODCAST_DIALOG_OPEN: i32 = 4101;
 const ID_PODCAST_DIALOG_SAVE_AS: i32 = 4102;
+const ID_PODCAST_DIALOG_CLOSE: i32 = 4103;
+const ID_AUDIOBOOK_DIALOG_CANCEL: i32 = 4104;
 const ID_PODCASTS_CATEGORY_BASE: i32 = 2400;
 const ID_PODCASTS_SOURCE_BASE: i32 = 2600;
 const ID_PODCASTS_EPISODE_BASE: i32 = 30000;
@@ -180,6 +183,8 @@ struct GithubReleaseInfo {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Settings {
+    #[serde(default = "default_ui_language")]
+    ui_language: String,
     language: String,
     voice: String,
     rate: i32,
@@ -196,10 +201,12 @@ impl Settings {
         if let Some(data) = read_app_storage_text("settings.json")
             && let Ok(mut settings) = serde_json::from_str::<Settings>(&data)
         {
+            settings.ui_language = normalize_ui_language(&settings.ui_language);
             normalize_article_sources(&mut settings);
             return settings;
         }
         let mut settings = Settings {
+            ui_language: default_ui_language(),
             language: "Italiano".to_string(),
             voice: "".to_string(),
             rate: 0,
@@ -219,6 +226,172 @@ impl Settings {
             println!("ERROR: Salvataggio impostazioni fallito: {}", err);
         }
     }
+}
+
+fn default_ui_language() -> String {
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(value) = std::env::var(key) {
+            let lower = value.to_lowercase();
+            if lower.starts_with("it") {
+                return "it".to_string();
+            }
+            if !lower.trim().is_empty() {
+                return "en".to_string();
+            }
+        }
+    }
+    "en".to_string()
+}
+
+fn normalize_ui_language(value: &str) -> String {
+    if value.eq_ignore_ascii_case("en") || value.eq_ignore_ascii_case("english") {
+        "en".to_string()
+    } else {
+        "it".to_string()
+    }
+}
+
+#[derive(Deserialize)]
+struct UiStrings {
+    settings_title: String,
+    about_title: String,
+    donations_title: String,
+    interface_language_label: String,
+    voice_language_label: String,
+    voice_label: String,
+    rate_label: String,
+    pitch_label: String,
+    volume_label: String,
+    ok: String,
+    button_start_reading: String,
+    button_play_podcast: String,
+    button_pause_reading: String,
+    button_resume_reading: String,
+    button_pause_podcast: String,
+    button_resume_podcast: String,
+    button_stop_reading: String,
+    button_stop_podcast: String,
+    button_save_audiobook: String,
+    button_settings: String,
+    button_back_30: String,
+    button_forward_30: String,
+    menu_file: String,
+    menu_articles: String,
+    menu_podcasts: String,
+    menu_help: String,
+    menu_open: String,
+    menu_open_help: String,
+    #[cfg(target_os = "macos")]
+    menu_start: String,
+    #[cfg(target_os = "macos")]
+    menu_start_help: String,
+    #[cfg(target_os = "macos")]
+    menu_play_pause: String,
+    #[cfg(target_os = "macos")]
+    menu_play_pause_help: String,
+    #[cfg(target_os = "macos")]
+    menu_stop: String,
+    #[cfg(target_os = "macos")]
+    menu_stop_help: String,
+    #[cfg(target_os = "macos")]
+    menu_save: String,
+    #[cfg(target_os = "macos")]
+    menu_save_help: String,
+    #[cfg(target_os = "macos")]
+    menu_settings: String,
+    #[cfg(target_os = "macos")]
+    menu_settings_help: String,
+    menu_exit: String,
+    menu_exit_help: String,
+    menu_about: String,
+    menu_about_help: String,
+    menu_donations: String,
+    menu_donations_help: String,
+    menu_updates: String,
+    menu_updates_help: String,
+    updates_title: String,
+    podcast_error_title: String,
+    yes: String,
+    add_source: String,
+    edit_source: String,
+    delete_source: String,
+    reorder_sources: String,
+    add_podcast: String,
+    delete_podcast: String,
+    reorder_podcasts: String,
+    keyword: String,
+    podcast_label: String,
+    source_label: String,
+    title_label: String,
+    url_or_source_label: String,
+    move_up: String,
+    move_down: String,
+    confirm_delete_title: String,
+    confirm_delete_rss_message: String,
+    confirm_delete_podcast_message: String,
+    sorted_articles_title: String,
+    sorted_articles_message: String,
+    sorted_podcasts_title: String,
+    sorted_podcasts_message: String,
+    loading_articles: String,
+    no_articles_available: String,
+    wait_loading_articles: String,
+    refresh_source_for_articles: String,
+    loading_podcasts: String,
+    wait_loading_category_podcasts: String,
+    no_podcasts_available: String,
+    no_podcasts_for_category: String,
+    add_this_podcast: String,
+    loading_episodes: String,
+    no_episodes_available: String,
+    wait_loading_episodes: String,
+    refresh_podcast_for_episodes: String,
+    save_podcast_episode: String,
+    podcast_loading_title: String,
+    podcast_ready: String,
+    podcast_download_title: String,
+    podcast_download_start: String,
+    save_audiobook_title: String,
+    create_audiobook_title: String,
+    initializing: String,
+    cancel: String,
+    audiobook_conversion_failed: String,
+    audiobook_file_not_saved: String,
+    audiobook_conversion_error: String,
+    conversion_error_title: String,
+    audiobook_saved_ok: String,
+    save_completed_title: String,
+    cancelling_audiobook: String,
+    podcast_downloaded_title: String,
+    podcast_downloaded_message: String,
+    open: String,
+    save_as: String,
+    close: String,
+    open_document_title: String,
+    analyzing_document: String,
+    analyzing_pdf: String,
+    document_loaded: String,
+    about_message: String,
+}
+
+fn parse_ui_strings(data: &str) -> UiStrings {
+    serde_json::from_str(data).expect("invalid ui translation json")
+}
+
+fn ui_strings(ui_language: &str) -> &'static UiStrings {
+    static UI_IT: OnceLock<UiStrings> = OnceLock::new();
+    static UI_EN: OnceLock<UiStrings> = OnceLock::new();
+
+    if normalize_ui_language(ui_language) == "en" {
+        UI_EN.get_or_init(|| parse_ui_strings(include_str!("../i18n/ui_en.json")))
+    } else {
+        UI_IT.get_or_init(|| parse_ui_strings(include_str!("../i18n/ui_it.json")))
+    }
+}
+
+fn current_ui_strings() -> &'static UiStrings {
+    let ui_language = Settings::load().ui_language;
+    ui_strings(&ui_language)
 }
 
 fn get_language_name(locale: &str) -> String {
@@ -332,49 +505,123 @@ fn nearest_preset_index(presets: &[(&str, i32)], value: i32) -> usize {
 }
 
 fn start_button_label(podcast_mode: bool) -> String {
+    let ui = current_ui_strings();
     let shortcut = format!("{}+L", MOD_CMD);
 
     if podcast_mode {
-        format!("Riproduci Podcast ({shortcut})")
+        format!("{} ({shortcut})", ui.button_play_podcast)
     } else {
-        format!("Avvia Lettura ({shortcut})")
+        format!("{} ({shortcut})", ui.button_start_reading)
     }
 }
 
 fn play_button_label(status: PlaybackStatus, podcast_mode: bool) -> String {
+    let ui = current_ui_strings();
     let shortcut = format!("{}+P", MOD_CMD);
 
     if podcast_mode {
         match status {
-            PlaybackStatus::Playing => format!("Pausa Podcast ({shortcut})"),
+            PlaybackStatus::Playing => format!("{} ({shortcut})", ui.button_pause_podcast),
             PlaybackStatus::Stopped | PlaybackStatus::Paused => {
-                format!("Riprendi Podcast ({shortcut})")
+                format!("{} ({shortcut})", ui.button_resume_podcast)
             }
         }
     } else {
         match status {
-            PlaybackStatus::Playing => format!("Pausa Lettura ({shortcut})"),
+            PlaybackStatus::Playing => format!("{} ({shortcut})", ui.button_pause_reading),
             PlaybackStatus::Stopped | PlaybackStatus::Paused => {
-                format!("Riprendi Lettura ({shortcut})")
+                format!("{} ({shortcut})", ui.button_resume_reading)
             }
         }
     }
 }
 
 fn save_button_label() -> String {
-    format!("Salva Audiolibro ({}+{}+A)", MOD_CMD, MOD_ALT)
+    let ui = current_ui_strings();
+    format!("{} ({}+{}+A)", ui.button_save_audiobook, MOD_CMD, MOD_ALT)
 }
 
 fn stop_button_label(podcast_mode: bool) -> String {
+    let ui = current_ui_strings();
     if podcast_mode {
-        format!("Ferma Podcast ({}+.)", MOD_CMD)
+        format!("{} ({}+.)", ui.button_stop_podcast, MOD_CMD)
     } else {
-        format!("Ferma Lettura ({}+.)", MOD_CMD)
+        format!("{} ({}+.)", ui.button_stop_reading, MOD_CMD)
     }
 }
 
 fn settings_button_label() -> String {
-    format!("Impostazioni ({}+,)", MOD_CMD)
+    let ui = current_ui_strings();
+    format!("{} ({}+,)", ui.button_settings, MOD_CMD)
+}
+
+fn update_menu_item_label(menubar: &MenuBar, id: i32, label: &str) {
+    if let Some(item) = menubar.find_item(id) {
+        item.set_label(label);
+    }
+}
+
+fn refresh_localized_main_ui(
+    frame: &Frame,
+    settings: &Arc<Mutex<Settings>>,
+    menus: (&Menu, &Menu),
+    menu_states: (&Arc<Mutex<ArticleMenuState>>, &Arc<Mutex<PodcastMenuState>>),
+    buttons: (&Button, &Button, &Button, &Button),
+) {
+    let ui_language = settings.lock().unwrap().ui_language.clone();
+    let ui = ui_strings(&ui_language);
+    let (articles_menu, podcasts_menu) = menus;
+    let (article_menu_state, podcast_menu_state) = menu_states;
+    let (btn_save, btn_settings, btn_podcast_back, btn_podcast_forward) = buttons;
+
+    if let Some(menubar) = frame.get_menu_bar() {
+        if menubar.get_menu_count() >= 4 {
+            menubar.set_menu_label(0, &ui.menu_file);
+            menubar.set_menu_label(1, &ui.menu_articles);
+            menubar.set_menu_label(2, &ui.menu_podcasts);
+            menubar.set_menu_label(3, &ui.menu_help);
+        }
+
+        update_menu_item_label(&menubar, ID_OPEN, &ui.menu_open);
+        update_menu_item_label(&menubar, ID_EXIT, &ui.menu_exit);
+        update_menu_item_label(&menubar, ID_ABOUT, &ui.menu_about);
+        update_menu_item_label(&menubar, ID_DONATIONS, &ui.menu_donations);
+        update_menu_item_label(&menubar, ID_CHECK_UPDATES, &ui.menu_updates);
+
+        #[cfg(target_os = "macos")]
+        {
+            update_menu_item_label(&menubar, ID_START_PLAYBACK, &ui.menu_start);
+            update_menu_item_label(&menubar, ID_PLAY_PAUSE, &ui.menu_play_pause);
+            update_menu_item_label(&menubar, ID_STOP, &ui.menu_stop);
+            update_menu_item_label(&menubar, ID_SAVE, &ui.menu_save);
+            update_menu_item_label(&menubar, ID_SETTINGS, &ui.menu_settings);
+        }
+    }
+
+    let article_loading_urls = article_menu_state.lock().unwrap().loading_urls.clone();
+    rebuild_articles_menu(articles_menu, settings, &article_loading_urls);
+
+    let (podcast_loading_urls, category_results, category_loading) = {
+        let state = podcast_menu_state.lock().unwrap();
+        (
+            state.loading_urls.clone(),
+            state.category_results.clone(),
+            state.category_loading.clone(),
+        )
+    };
+    rebuild_podcasts_menu(
+        podcasts_menu,
+        settings,
+        &podcast_loading_urls,
+        &category_results,
+        &category_loading,
+    );
+
+    btn_save.set_label(&save_button_label());
+    btn_settings.set_label(&settings_button_label());
+    btn_podcast_back.set_label(&format!("{} ({}+Left)", ui.button_back_30, MOD_CMD));
+    btn_podcast_forward.set_label(&format!("{} ({}+Right)", ui.button_forward_30, MOD_CMD));
+    frame.layout();
 }
 
 #[cfg(target_os = "macos")]
@@ -593,25 +840,25 @@ fn set_mac_pending_command_period_sequence(active: bool) {
 }
 
 fn about_title() -> &'static str {
-    "Informazioni sul programma"
+    &current_ui_strings().about_title
 }
 
 fn about_message() -> String {
-    format!(
-        "Sonarpad Minimal è una versione essenziale di Sonarpad con supporto multi-formato. \
-Apre file TXT, PDF, DOC, DOCX, EPUB, RTF, HTML e fogli di calcolo; legge il testo con sintesi vocale, \
-crea audiolibri MP3, importa articoli e podcast e supporta la riproduzione dei podcast. \
-Versione: {}. Autore: Ambrogio Riili.",
-        env!("CARGO_PKG_VERSION")
-    )
+    current_ui_strings()
+        .about_message
+        .replace("{version}", env!("CARGO_PKG_VERSION"))
 }
 
 fn donations_title() -> &'static str {
-    "Donazioni"
+    &current_ui_strings().donations_title
 }
 
 fn donations_message() -> &'static str {
-    include_str!("../donations_it.txt")
+    if Settings::load().ui_language == "it" {
+        include_str!("../donations_it.txt")
+    } else {
+        include_str!("../donations_en.txt")
+    }
 }
 
 fn open_donations_dialog(parent: &Frame) {
@@ -631,7 +878,7 @@ fn open_donations_dialog(parent: &Frame) {
     let button_row = BoxSizer::builder(Orientation::Horizontal).build();
     let btn_ok = Button::builder(&panel)
         .with_id(ID_OK)
-        .with_label("OK")
+        .with_label(&current_ui_strings().ok)
         .build();
     button_row.add_spacer(1);
     button_row.add(&btn_ok, 0, SizerFlag::All, 10);
@@ -661,7 +908,7 @@ fn show_modeless_message_dialog(parent: &Frame, title: &str, message: &str) {
     let button_row = BoxSizer::builder(Orientation::Horizontal).build();
     let btn_ok = Button::builder(&panel)
         .with_id(ID_OK)
-        .with_label("OK")
+        .with_label(&current_ui_strings().ok)
         .build();
     button_row.add_spacer(1);
     button_row.add(&btn_ok, 0, SizerFlag::All, 10);
@@ -680,6 +927,7 @@ fn show_message_dialog(parent: &Frame, title: &str, message: &str) {
     let dialog = MessageDialog::builder(parent, message, title)
         .with_style(MessageDialogStyle::OK | MessageDialogStyle::IconInformation)
         .build();
+    localize_standard_dialog_buttons(&dialog);
     dialog.show_modal();
 }
 
@@ -687,11 +935,13 @@ fn show_message_subdialog(parent: &Dialog, title: &str, message: &str) {
     let dialog = MessageDialog::builder(parent, message, title)
         .with_style(MessageDialogStyle::OK | MessageDialogStyle::IconInformation)
         .build();
+    localize_standard_dialog_buttons(&dialog);
     dialog.show_modal();
 }
 
 fn prompt_downloaded_podcast_action(parent: &Frame) -> PodcastDownloadAction {
-    let dialog = Dialog::builder(parent, "Podcast scaricato")
+    let ui = current_ui_strings();
+    let dialog = Dialog::builder(parent, &ui.podcast_downloaded_title)
         .with_style(DialogStyle::Caption | DialogStyle::SystemMenu | DialogStyle::CloseBox)
         .with_size(460, 180)
         .build();
@@ -699,22 +949,22 @@ fn prompt_downloaded_podcast_action(parent: &Frame) -> PodcastDownloadAction {
     let root = BoxSizer::builder(Orientation::Vertical).build();
 
     let text = StaticText::builder(&panel)
-        .with_label("L'episodio podcast e' stato scaricato.")
+        .with_label(&ui.podcast_downloaded_message)
         .build();
     root.add(&text, 1, SizerFlag::Expand | SizerFlag::All, 12);
 
     let button_row = BoxSizer::builder(Orientation::Horizontal).build();
     let btn_open = Button::builder(&panel)
         .with_id(ID_PODCAST_DIALOG_OPEN)
-        .with_label("Apri")
+        .with_label(&ui.open)
         .build();
     let btn_save_as = Button::builder(&panel)
         .with_id(ID_PODCAST_DIALOG_SAVE_AS)
-        .with_label("Salva con nome...")
+        .with_label(&ui.save_as)
         .build();
     let btn_close = Button::builder(&panel)
-        .with_id(ID_CANCEL)
-        .with_label("Chiudi")
+        .with_id(ID_PODCAST_DIALOG_CLOSE)
+        .with_label(&ui.close)
         .build();
     button_row.add_spacer(1);
     button_row.add(&btn_open, 0, SizerFlag::All, 10);
@@ -723,7 +973,7 @@ fn prompt_downloaded_podcast_action(parent: &Frame) -> PodcastDownloadAction {
     root.add_sizer(&button_row, 0, SizerFlag::Expand, 0);
 
     panel.set_sizer(root, true);
-    dialog.set_escape_id(ID_CANCEL);
+    dialog.set_escape_id(ID_PODCAST_DIALOG_CLOSE);
 
     let dialog_open = dialog;
     btn_open.on_click(move |_| {
@@ -737,7 +987,7 @@ fn prompt_downloaded_podcast_action(parent: &Frame) -> PodcastDownloadAction {
 
     let dialog_close = dialog;
     btn_close.on_click(move |_| {
-        dialog_close.end_modal(ID_CANCEL);
+        dialog_close.end_modal(ID_PODCAST_DIALOG_CLOSE);
     });
 
     match dialog.show_modal() {
@@ -752,6 +1002,7 @@ fn save_downloaded_podcast_file(
     file_path: &Path,
     suggested_name: &str,
 ) -> Result<(), String> {
+    let ui = current_ui_strings();
     let extension = file_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -760,7 +1011,7 @@ fn save_downloaded_podcast_file(
     let default_file = format!("{}.{}", sanitize_filename(suggested_name), extension);
     let wildcard = format!("File audio (*.{extension})|*.{extension}|Tutti|*.*");
     let dialog = FileDialog::builder(parent)
-        .with_message("Salva episodio podcast")
+        .with_message(&ui.save_podcast_episode)
         .with_default_file(&default_file)
         .with_wildcard(&wildcard)
         .with_style(FileDialogStyle::Save | FileDialogStyle::OverwritePrompt)
@@ -785,6 +1036,7 @@ fn save_downloaded_podcast_file(
 }
 
 fn confirm_delete_dialog(parent: &Frame, title: &str, message: &str) -> bool {
+    let ui = current_ui_strings();
     let dialog = Dialog::builder(parent, title)
         .with_style(DialogStyle::Caption | DialogStyle::SystemMenu | DialogStyle::CloseBox)
         .with_size(460, 170)
@@ -798,11 +1050,11 @@ fn confirm_delete_dialog(parent: &Frame, title: &str, message: &str) -> bool {
     let buttons = BoxSizer::builder(Orientation::Horizontal).build();
     let yes_button = Button::builder(&panel)
         .with_id(ID_YES)
-        .with_label("Sì")
+        .with_label(&ui.yes)
         .build();
     let no_button = Button::builder(&panel)
         .with_id(ID_NO)
-        .with_label("No")
+        .with_label(&ui.close)
         .build();
     buttons.add_spacer(1);
     buttons.add(&yes_button, 0, SizerFlag::All, 10);
@@ -841,8 +1093,10 @@ fn should_load_file_with_progress(_path: &Path) -> bool {
 }
 
 fn load_file_with_progress(parent: &Frame, path: &Path) -> Result<String, String> {
+    let ui_language = Settings::load().ui_language;
+    let ui = ui_strings(&ui_language);
     let progress =
-        ProgressDialog::builder(parent, "Apertura documento", "Analisi documento...", 100)
+        ProgressDialog::builder(parent, &ui.open_document_title, &ui.analyzing_document, 100)
             .with_style(ProgressDialogStyle::Smooth)
             .build();
     let state = Arc::new(Mutex::new(None::<Result<String, String>>));
@@ -857,14 +1111,13 @@ fn load_file_with_progress(parent: &Frame, path: &Path) -> Result<String, String
     loop {
         std::thread::sleep(std::time::Duration::from_millis(100));
         if let Some(result) = state.lock().unwrap().take() {
-            let _ = progress.update(100, Some("Documento caricato."));
+            let _ = progress.update(100, Some(&ui.document_loaded));
             progress.destroy();
-            show_message_dialog(parent, "Apertura documento", "Documento caricato.");
             return result;
         }
 
         progress_value = (progress_value + 4).min(95);
-        let _ = progress.update(progress_value, Some("Analisi PDF in corso..."));
+        let _ = progress.update(progress_value, Some(&ui.analyzing_pdf));
         if progress_value >= 95 {
             progress_value = 20;
         }
@@ -1010,60 +1263,116 @@ mod tests {
 }
 
 fn check_for_updates(parent: &Frame) {
+    let ui = current_ui_strings();
     let current_version = env!("CARGO_PKG_VERSION");
     match fetch_latest_release_version() {
         Ok(latest_version) => {
             if is_newer_version(&latest_version, current_version) {
-                let dialog = MessageDialog::builder(
-                    parent,
-                    &format!(
+                let message = if Settings::load().ui_language == "it" {
+                    format!(
                         "È disponibile la versione {}.\n\nVuoi scaricarla ora?",
                         latest_version
-                    ),
-                    "Aggiornamenti",
-                )
-                .with_style(MessageDialogStyle::YesNo | MessageDialogStyle::IconQuestion)
-                .build();
+                    )
+                } else {
+                    format!(
+                        "Version {} is available.\n\nDo you want to download it now?",
+                        latest_version
+                    )
+                };
+                let dialog = MessageDialog::builder(parent, &message, &ui.updates_title)
+                    .with_style(MessageDialogStyle::YesNo | MessageDialogStyle::IconQuestion)
+                    .build();
+                localize_standard_dialog_buttons(&dialog);
                 if dialog.show_modal() == ID_YES
                     && let Err(err) =
                         open_url_in_browser(latest_download_url_for_current_platform())
                 {
                     show_message_dialog(
                         parent,
-                        "Aggiornamenti",
-                        &format!(
-                            "È disponibile la versione {} ma non sono riuscito ad aprire il link.\n\n{}",
-                            latest_version, err
-                        ),
+                        &ui.updates_title,
+                        &if Settings::load().ui_language == "it" {
+                            format!(
+                                "È disponibile la versione {} ma non sono riuscito ad aprire il link.\n\n{}",
+                                latest_version, err
+                            )
+                        } else {
+                            format!(
+                                "Version {} is available but I could not open the link.\n\n{}",
+                                latest_version, err
+                            )
+                        },
                     );
                 }
             } else {
                 show_message_dialog(
                     parent,
-                    "Aggiornamenti",
-                    &format!(
-                        "Hai già l'ultima versione installata.\n\nVersione attuale: {}\nUltima versione: {}",
-                        current_version, latest_version
-                    ),
+                    &ui.updates_title,
+                    &if Settings::load().ui_language == "it" {
+                        format!(
+                            "Hai già l'ultima versione installata.\n\nVersione attuale: {}\nUltima versione: {}",
+                            current_version, latest_version
+                        )
+                    } else {
+                        format!(
+                            "You already have the latest version installed.\n\nCurrent version: {}\nLatest version: {}",
+                            current_version, latest_version
+                        )
+                    },
                 );
             }
         }
         Err(err) => {
             show_message_dialog(
                 parent,
-                "Aggiornamenti",
-                &format!(
-                    "Controllo aggiornamenti non riuscito.\n\nVersione attuale: {}\nErrore: {}",
-                    current_version, err
-                ),
+                &ui.updates_title,
+                &if Settings::load().ui_language == "it" {
+                    format!(
+                        "Controllo aggiornamenti non riuscito.\n\nVersione attuale: {}\nErrore: {}",
+                        current_version, err
+                    )
+                } else {
+                    format!(
+                        "Update check failed.\n\nCurrent version: {}\nError: {}",
+                        current_version, err
+                    )
+                },
             );
         }
     }
 }
 
+fn set_progress_cancel_label(progress: &ProgressDialog) {
+    if let Some(button) = progress.find_window_by_id(ID_CANCEL) {
+        button.set_label(&current_ui_strings().cancel);
+    }
+    if let Some(button) = progress.find_window_by_id(ID_OK) {
+        button.set_label(&current_ui_strings().cancel);
+    }
+}
+
 fn set_progress_close_label(progress: &ProgressDialog) {
     if let Some(button) = progress.find_window_by_id(ID_CANCEL) {
-        button.set_label("Chiudi");
+        button.set_label(&current_ui_strings().close);
+    }
+    if let Some(button) = progress.find_window_by_id(ID_OK) {
+        button.set_label(&current_ui_strings().close);
+    }
+}
+
+fn localize_standard_dialog_buttons(dialog: &impl WxWidget) {
+    let ui = current_ui_strings();
+
+    if let Some(button) = dialog.find_window_by_id(ID_OK) {
+        button.set_label(&ui.ok);
+    }
+    if let Some(button) = dialog.find_window_by_id(ID_CANCEL) {
+        button.set_label(&ui.close);
+    }
+    if let Some(button) = dialog.find_window_by_id(ID_NO) {
+        button.set_label(&ui.close);
+    }
+    if let Some(button) = dialog.find_window_by_id(ID_YES) {
+        button.set_label(&ui.yes);
     }
 }
 
@@ -1171,8 +1480,8 @@ fn podcasts_category_podcast_menu_id(category_index: usize, result_index: usize)
 }
 
 fn decode_podcast_category_podcast_menu_id(menu_id: i32) -> Option<(usize, usize)> {
-    let max_menu_id =
-        ID_PODCASTS_CATEGORY_PODCAST_BASE + (podcasts::apple_categories_it().len() as i32 * 100);
+    let max_menu_id = ID_PODCASTS_CATEGORY_PODCAST_BASE
+        + (podcasts::apple_categories(&Settings::load().ui_language).len() as i32 * 100);
     if menu_id < ID_PODCASTS_CATEGORY_PODCAST_BASE || menu_id >= max_menu_id {
         return None;
     }
@@ -1321,19 +1630,23 @@ fn wait_for_podcast_ready(
     player: &podcast_player::PodcastPlayer,
     audio_url: &str,
 ) -> bool {
+    let ui = current_ui_strings();
     let progress = ProgressDialog::builder(
         parent,
-        "Caricamento Podcast",
-        "Preparazione stream podcast...",
+        &ui.podcast_loading_title,
+        &ui.podcast_download_start,
         100,
     )
     .with_style(ProgressDialogStyle::CanAbort | ProgressDialogStyle::Smooth)
     .build();
+    set_progress_cancel_label(&progress);
 
     for step in 0..=40 {
         let percent = (step * 100) / 40;
-        let message = format!("Scaricamento podcast... {}%", percent);
-        if !progress.update(percent, Some(&message)) {
+        let message = format!("{} {}%", ui.loading_podcasts, percent);
+        let continue_running = progress.update(percent, Some(&message));
+        set_progress_cancel_label(&progress);
+        if !continue_running {
             append_podcast_log(&format!("podcast_ready.cancelled audio_url={audio_url}"));
             return false;
         }
@@ -1341,7 +1654,7 @@ fn wait_for_podcast_ready(
         match player.is_ready_for_playback() {
             Ok(true) => {
                 log_podcast_player_snapshot(player, "podcast_ready.success", audio_url);
-                progress.update(100, Some("Podcast pronto."));
+                progress.update(100, Some(&ui.podcast_ready));
                 set_progress_close_label(&progress);
                 return true;
             }
@@ -1547,15 +1860,17 @@ fn open_podcast_episode_externally(
     url: &str,
     suggested_name: &str,
 ) -> Result<(), String> {
+    let ui = current_ui_strings();
     append_podcast_log(&format!("external_open.begin url={}", url.trim()));
     let progress = ProgressDialog::builder(
         parent,
-        "Scaricamento Podcast",
-        "Avvio download episodio...",
+        &ui.podcast_download_title,
+        &ui.podcast_download_start,
         100,
     )
     .with_style(ProgressDialogStyle::CanAbort | ProgressDialogStyle::Smooth)
     .build();
+    set_progress_cancel_label(&progress);
 
     let state = Arc::new(Mutex::new(PodcastExternalDownloadState::default()));
     let state_thread = Arc::clone(&state);
@@ -1577,8 +1892,7 @@ fn open_podcast_episode_externally(
                 "external_open.download_completed path={}",
                 file_path.display()
             ));
-            progress.update(100, Some("Podcast scaricato."));
-            set_progress_close_label(&progress);
+            progress.destroy();
             break file_path;
         }
 
@@ -1600,7 +1914,7 @@ fn open_podcast_episode_externally(
                 let downloaded_mb = snapshot.downloaded_bytes as f64 / (1024.0 * 1024.0);
                 (
                     fallback_percent,
-                    format!("Scaricamento podcast... {:.1} MB", downloaded_mb),
+                    format!("{} {:.1} MB", ui.loading_podcasts, downloaded_mb),
                 )
             };
 
@@ -1612,7 +1926,9 @@ fn open_podcast_episode_externally(
             ));
         }
 
-        if !progress.update(percent, Some(&message)) {
+        let continue_running = progress.update(percent, Some(&message));
+        set_progress_cancel_label(&progress);
+        if !continue_running {
             append_podcast_log("external_open.cancelled_by_user");
             state.lock().unwrap().abort_requested = true;
             return Err("scaricamento podcast annullato".to_string());
@@ -1682,7 +1998,7 @@ fn build_language_list(voices: &[edge_tts::VoiceInfo]) -> Vec<(String, String)> 
 
 fn normalize_article_sources(settings: &mut Settings) {
     if settings.article_sources.is_empty() {
-        settings.article_sources = articles::default_italian_sources();
+        settings.article_sources = articles::default_sources_for_ui_language(&settings.ui_language);
     }
     for source in &mut settings.article_sources {
         source.url = articles::normalize_url(&source.url);
@@ -1718,38 +2034,40 @@ fn rebuild_articles_menu(
     settings: &Arc<Mutex<Settings>>,
     loading_urls: &HashSet<String>,
 ) {
+    let ui_language = settings.lock().unwrap().ui_language.clone();
+    let ui = ui_strings(&ui_language);
     for item in articles_menu.get_menu_items().into_iter().rev() {
         let _ = articles_menu.delete_item(&item);
     }
 
     let _ = articles_menu.append(
         ID_ARTICLES_ADD_SOURCE,
-        "Aggiungi fonte...",
-        "Aggiungi un feed RSS o una fonte",
+        &format!("{}...", ui.add_source),
+        &ui.add_source,
         ItemKind::Normal,
     );
     let _ = articles_menu.append(
         ID_ARTICLES_EDIT_SOURCE,
-        "Modifica fonte...",
-        "Modifica una fonte RSS salvata",
+        &format!("{}...", ui.edit_source),
+        &ui.edit_source,
         ItemKind::Normal,
     );
     let _ = articles_menu.append(
         ID_ARTICLES_DELETE_SOURCE,
-        "Elimina fonte...",
-        "Elimina una fonte RSS salvata",
+        &format!("{}...", ui.delete_source),
+        &ui.delete_source,
         ItemKind::Normal,
     );
     let _ = articles_menu.append(
         ID_ARTICLES_REORDER_SOURCES,
-        "Riordina fonti...",
-        "Riordina le fonti RSS salvate",
+        &format!("{}...", ui.reorder_sources),
+        &ui.reorder_sources,
         ItemKind::Normal,
     );
     let _ = articles_menu.append(
         ID_ARTICLES_SORT_SOURCES_ALPHABETICALLY,
-        "Riordina le fonti alfabeticamente",
-        "Riordina alfabeticamente tutte le fonti RSS salvate",
+        &ui.sorted_articles_title,
+        &ui.sorted_articles_message,
         ItemKind::Normal,
     );
     articles_menu.append_separator();
@@ -1760,14 +2078,14 @@ fn rebuild_articles_menu(
         if source.items.is_empty() {
             let placeholder_id = articles_source_menu_id(source_index);
             let placeholder_label = if loading_urls.contains(&source.url) {
-                "Caricamento articoli..."
+                &ui.loading_articles
             } else {
-                "Nessun articolo disponibile"
+                &ui.no_articles_available
             };
             let placeholder_help = if loading_urls.contains(&source.url) {
-                "Attendere il caricamento degli articoli"
+                &ui.wait_loading_articles
             } else {
-                "Aggiorna la fonte per ottenere gli articoli"
+                &ui.refresh_source_for_articles
             };
             let _ = submenu.append(
                 placeholder_id,
@@ -1802,25 +2120,28 @@ fn rebuild_podcasts_menu(
     category_results: &HashMap<u32, Vec<podcasts::PodcastSearchResult>>,
     category_loading: &HashSet<u32>,
 ) {
+    let ui_language = settings.lock().unwrap().ui_language.clone();
+    let categories = podcasts::apple_categories(&ui_language);
+    let ui = ui_strings(&ui_language);
     for item in podcasts_menu.get_menu_items().into_iter().rev() {
         let _ = podcasts_menu.delete_item(&item);
     }
 
     let _ = podcasts_menu.append(
         ID_PODCASTS_ADD,
-        "Aggiungi podcast...",
-        "Aggiungi un podcast cercando per parola chiave",
+        &format!("{}...", ui.add_podcast),
+        &ui.add_podcast,
         ItemKind::Normal,
     );
     let categories_menu = Menu::builder().build();
-    for (index, category) in podcasts::apple_categories_it().iter().enumerate() {
+    for (index, category) in categories.iter().enumerate() {
         let category_submenu = Menu::builder().build();
         if category_loading.contains(&category.id) {
             let placeholder_id = ID_PODCASTS_CATEGORY_BASE + index as i32;
             let _ = category_submenu.append(
                 placeholder_id,
-                "Caricamento podcast...",
-                "Attendere il caricamento dei podcast della categoria",
+                &ui.loading_podcasts,
+                &ui.wait_loading_category_podcasts,
                 ItemKind::Normal,
             );
             let _ = category_submenu.enable_item(placeholder_id, false);
@@ -1829,8 +2150,8 @@ fn rebuild_podcasts_menu(
                 let placeholder_id = ID_PODCASTS_CATEGORY_BASE + index as i32;
                 let _ = category_submenu.append(
                     placeholder_id,
-                    "Nessun podcast disponibile",
-                    "Nessun podcast disponibile per questa categoria",
+                    &ui.no_podcasts_available,
+                    &ui.no_podcasts_for_category,
                     ItemKind::Normal,
                 );
                 let _ = category_submenu.enable_item(placeholder_id, false);
@@ -1844,7 +2165,7 @@ fn rebuild_podcasts_menu(
                     let _ = category_submenu.append(
                         podcasts_category_podcast_menu_id(index, result_index),
                         &label,
-                        "Aggiungi questo podcast",
+                        &ui.add_this_podcast,
                         ItemKind::Normal,
                     );
                 }
@@ -1853,8 +2174,8 @@ fn rebuild_podcasts_menu(
             let placeholder_id = ID_PODCASTS_CATEGORY_BASE + index as i32;
             let _ = category_submenu.append(
                 placeholder_id,
-                "Caricamento podcast...",
-                "Attendere il caricamento dei podcast della categoria",
+                &ui.loading_podcasts,
+                &ui.wait_loading_category_podcasts,
                 ItemKind::Normal,
             );
             let _ = category_submenu.enable_item(placeholder_id, false);
@@ -1872,20 +2193,20 @@ fn rebuild_podcasts_menu(
     );
     let _ = podcasts_menu.append(
         ID_PODCASTS_DELETE,
-        "Elimina podcast...",
-        "Elimina un podcast salvato",
+        &format!("{}...", ui.delete_podcast),
+        &ui.delete_podcast,
         ItemKind::Normal,
     );
     let _ = podcasts_menu.append(
         ID_PODCASTS_REORDER_SOURCES,
-        "Riordina podcast...",
-        "Riordina manualmente i podcast salvati",
+        &format!("{}...", ui.reorder_podcasts),
+        &ui.reorder_podcasts,
         ItemKind::Normal,
     );
     let _ = podcasts_menu.append(
         ID_PODCASTS_SORT_SOURCES_ALPHABETICALLY,
-        "Riordina i podcast alfabeticamente",
-        "Riordina alfabeticamente tutti i podcast salvati",
+        &ui.sorted_podcasts_title,
+        &ui.sorted_podcasts_message,
         ItemKind::Normal,
     );
     podcasts_menu.append_separator();
@@ -1899,14 +2220,14 @@ fn rebuild_podcasts_menu(
             let _ = submenu.append(
                 placeholder_id,
                 if is_loading {
-                    "Caricamento episodi..."
+                    &ui.loading_episodes
                 } else {
-                    "Nessun episodio disponibile"
+                    &ui.no_episodes_available
                 },
                 if is_loading {
-                    "Attendere il caricamento degli episodi"
+                    &ui.wait_loading_episodes
                 } else {
-                    "Aggiorna il podcast per ottenere episodi"
+                    &ui.refresh_podcast_for_episodes
                 },
                 ItemKind::Normal,
             );
@@ -2101,7 +2422,7 @@ fn refresh_all_podcast_categories(
     rt: &Arc<Runtime>,
     podcast_menu_state: &Arc<Mutex<PodcastMenuState>>,
 ) {
-    for category in podcasts::apple_categories_it() {
+    for category in podcasts::apple_categories(&Settings::load().ui_language) {
         {
             let mut state = podcast_menu_state.lock().unwrap();
             state.category_loading.insert(category.id);
@@ -2371,7 +2692,8 @@ fn open_add_podcast_dialog(
     parent: &Frame,
     rt: &Arc<Runtime>,
 ) -> Option<podcasts::PodcastSearchResult> {
-    let dialog = Dialog::builder(parent, "Aggiungi podcast")
+    let ui = current_ui_strings();
+    let dialog = Dialog::builder(parent, &ui.add_podcast)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(560, 180)
         .build();
@@ -2380,9 +2702,7 @@ fn open_add_podcast_dialog(
 
     let keyword_row = BoxSizer::builder(Orientation::Horizontal).build();
     keyword_row.add(
-        &StaticText::builder(&panel)
-            .with_label("Parola chiave:")
-            .build(),
+        &StaticText::builder(&panel).with_label(&ui.keyword).build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2394,7 +2714,7 @@ fn open_add_podcast_dialog(
     let buttons = BoxSizer::builder(Orientation::Horizontal).build();
     let ok_button = Button::builder(&panel)
         .with_id(ID_OK)
-        .with_label("OK")
+        .with_label(&ui.ok)
         .build();
     buttons.add_spacer(1);
     buttons.add(&ok_button, 0, SizerFlag::All, 10);
@@ -2427,10 +2747,8 @@ fn open_podcast_search_results_dialog(
     rt: &Arc<Runtime>,
     keyword: &str,
 ) -> Option<podcasts::PodcastSearchResult> {
-    let results = rt
-        .block_on(podcasts::search_itunes_podcasts(keyword))
-        .ok()?;
-    open_podcast_results_dialog(parent, "Scegli podcast", &results)
+    let results = rt.block_on(podcasts::search_podcasts(keyword)).ok()?;
+    open_podcast_results_dialog(parent, &current_ui_strings().add_podcast, &results)
 }
 
 fn open_podcast_results_dialog(
@@ -2438,6 +2756,7 @@ fn open_podcast_results_dialog(
     title: &str,
     results: &[podcasts::PodcastSearchResult],
 ) -> Option<podcasts::PodcastSearchResult> {
+    let ui = current_ui_strings();
     if results.is_empty() {
         return None;
     }
@@ -2451,7 +2770,9 @@ fn open_podcast_results_dialog(
 
     let result_row = BoxSizer::builder(Orientation::Horizontal).build();
     result_row.add(
-        &StaticText::builder(&panel).with_label("Podcast:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.podcast_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2472,7 +2793,7 @@ fn open_podcast_results_dialog(
     let buttons = BoxSizer::builder(Orientation::Horizontal).build();
     let ok_button = Button::builder(&panel)
         .with_id(ID_OK)
-        .with_label("OK")
+        .with_label(&ui.ok)
         .build();
     buttons.add_spacer(1);
     buttons.add(&ok_button, 0, SizerFlag::All, 10);
@@ -2498,12 +2819,13 @@ fn open_podcast_results_dialog(
 }
 
 fn open_delete_podcast_dialog(parent: &Frame, settings: &Arc<Mutex<Settings>>) -> Option<usize> {
+    let ui = current_ui_strings();
     let sources = settings.lock().unwrap().podcast_sources.clone();
     if sources.is_empty() {
         return None;
     }
 
-    let dialog = Dialog::builder(parent, "Elimina podcast")
+    let dialog = Dialog::builder(parent, &ui.delete_podcast)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(520, 160)
         .build();
@@ -2512,7 +2834,9 @@ fn open_delete_podcast_dialog(parent: &Frame, settings: &Arc<Mutex<Settings>>) -
 
     let row = BoxSizer::builder(Orientation::Horizontal).build();
     row.add(
-        &StaticText::builder(&panel).with_label("Podcast:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.podcast_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2537,7 +2861,7 @@ fn open_delete_podcast_dialog(parent: &Frame, settings: &Arc<Mutex<Settings>>) -
     let buttons = BoxSizer::builder(Orientation::Horizontal).build();
     let ok_button = Button::builder(&panel)
         .with_id(ID_OK)
-        .with_label("OK")
+        .with_label(&ui.ok)
         .build();
     buttons.add_spacer(1);
     buttons.add(&ok_button, 0, SizerFlag::All, 10);
@@ -2561,7 +2885,8 @@ fn open_delete_podcast_dialog(parent: &Frame, settings: &Arc<Mutex<Settings>>) -
 }
 
 fn open_add_article_source_dialog(parent: &Frame) -> Option<(String, String)> {
-    let dialog = Dialog::builder(parent, "Aggiungi fonte")
+    let ui = current_ui_strings();
+    let dialog = Dialog::builder(parent, &ui.add_source)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(520, 180)
         .build();
@@ -2570,7 +2895,9 @@ fn open_add_article_source_dialog(parent: &Frame) -> Option<(String, String)> {
 
     let title_row = BoxSizer::builder(Orientation::Horizontal).build();
     title_row.add(
-        &StaticText::builder(&panel).with_label("Titolo:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.title_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2582,7 +2909,7 @@ fn open_add_article_source_dialog(parent: &Frame) -> Option<(String, String)> {
     let url_row = BoxSizer::builder(Orientation::Horizontal).build();
     url_row.add(
         &StaticText::builder(&panel)
-            .with_label("URL o fonte:")
+            .with_label(&ui.url_or_source_label)
             .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
@@ -2595,7 +2922,7 @@ fn open_add_article_source_dialog(parent: &Frame) -> Option<(String, String)> {
     let buttons = BoxSizer::builder(Orientation::Horizontal).build();
     let ok_button = Button::builder(&panel)
         .with_id(ID_OK)
-        .with_label("OK")
+        .with_label(&ui.ok)
         .build();
     buttons.add_spacer(1);
     buttons.add(&ok_button, 0, SizerFlag::All, 10);
@@ -2628,12 +2955,13 @@ fn open_edit_article_source_dialog(
     parent: &Frame,
     settings: &Arc<Mutex<Settings>>,
 ) -> Option<(usize, String, String)> {
+    let ui = current_ui_strings();
     let sources = settings.lock().unwrap().article_sources.clone();
     if sources.is_empty() {
         return None;
     }
 
-    let dialog = Dialog::builder(parent, "Modifica fonte")
+    let dialog = Dialog::builder(parent, &ui.edit_source)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(560, 220)
         .build();
@@ -2642,7 +2970,9 @@ fn open_edit_article_source_dialog(
 
     let source_row = BoxSizer::builder(Orientation::Horizontal).build();
     source_row.add(
-        &StaticText::builder(&panel).with_label("Fonte:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.source_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2662,7 +2992,9 @@ fn open_edit_article_source_dialog(
 
     let title_row = BoxSizer::builder(Orientation::Horizontal).build();
     title_row.add(
-        &StaticText::builder(&panel).with_label("Titolo:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.title_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2674,7 +3006,7 @@ fn open_edit_article_source_dialog(
     let url_row = BoxSizer::builder(Orientation::Horizontal).build();
     url_row.add(
         &StaticText::builder(&panel)
-            .with_label("URL o fonte:")
+            .with_label(&ui.url_or_source_label)
             .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
@@ -2741,12 +3073,13 @@ fn open_delete_article_source_dialog(
     parent: &Frame,
     settings: &Arc<Mutex<Settings>>,
 ) -> Option<usize> {
+    let ui = current_ui_strings();
     let sources = settings.lock().unwrap().article_sources.clone();
     if sources.is_empty() {
         return None;
     }
 
-    let dialog = Dialog::builder(parent, "Elimina fonte")
+    let dialog = Dialog::builder(parent, &ui.delete_source)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(520, 160)
         .build();
@@ -2755,7 +3088,9 @@ fn open_delete_article_source_dialog(
 
     let source_row = BoxSizer::builder(Orientation::Horizontal).build();
     source_row.add(
-        &StaticText::builder(&panel).with_label("Fonte:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.source_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2812,12 +3147,13 @@ fn open_reorder_article_sources_dialog(
     parent: &Frame,
     settings: &Arc<Mutex<Settings>>,
 ) -> Option<Vec<articles::ArticleSource>> {
+    let ui = current_ui_strings();
     let sources = settings.lock().unwrap().article_sources.clone();
     if sources.len() < 2 {
         return None;
     }
 
-    let dialog = Dialog::builder(parent, "Riordina fonti")
+    let dialog = Dialog::builder(parent, &ui.reorder_sources)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(560, 220)
         .build();
@@ -2828,7 +3164,9 @@ fn open_reorder_article_sources_dialog(
 
     let source_row = BoxSizer::builder(Orientation::Horizontal).build();
     source_row.add(
-        &StaticText::builder(&panel).with_label("Fonte:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.source_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2838,8 +3176,8 @@ fn open_reorder_article_sources_dialog(
     root.add_sizer(&source_row, 0, SizerFlag::Expand, 0);
 
     let action_row = BoxSizer::builder(Orientation::Horizontal).build();
-    let move_up_button = Button::builder(&panel).with_label("Sposta su").build();
-    let move_down_button = Button::builder(&panel).with_label("Sposta giù").build();
+    let move_up_button = Button::builder(&panel).with_label(&ui.move_up).build();
+    let move_down_button = Button::builder(&panel).with_label(&ui.move_down).build();
     action_row.add(&move_up_button, 1, SizerFlag::All, 5);
     action_row.add(&move_down_button, 1, SizerFlag::All, 5);
     root.add_sizer(&action_row, 0, SizerFlag::Expand, 0);
@@ -2906,8 +3244,8 @@ fn open_reorder_article_sources_dialog(
         refresh_choice_up(&choice_source_up, new_index);
         show_message_subdialog(
             &dialog_up,
-            "Fonte spostata",
-            &format!("{moved_label} è stata spostata sopra {target_label}."),
+            &ui.reorder_sources,
+            &format!("{moved_label} -> {target_label}"),
         );
     });
 
@@ -2938,8 +3276,8 @@ fn open_reorder_article_sources_dialog(
         refresh_choice_down(&choice_source_down, new_index);
         show_message_subdialog(
             &dialog_down,
-            "Fonte spostata",
-            &format!("{moved_label} è stata spostata sotto {target_label}."),
+            &ui.reorder_sources,
+            &format!("{moved_label} -> {target_label}"),
         );
     });
 
@@ -2963,12 +3301,13 @@ fn open_reorder_podcast_sources_dialog(
     parent: &Frame,
     settings: &Arc<Mutex<Settings>>,
 ) -> Option<Vec<podcasts::PodcastSource>> {
+    let ui = current_ui_strings();
     let sources = settings.lock().unwrap().podcast_sources.clone();
     if sources.len() < 2 {
         return None;
     }
 
-    let dialog = Dialog::builder(parent, "Riordina podcast")
+    let dialog = Dialog::builder(parent, &ui.reorder_podcasts)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(560, 220)
         .build();
@@ -2979,7 +3318,9 @@ fn open_reorder_podcast_sources_dialog(
 
     let source_row = BoxSizer::builder(Orientation::Horizontal).build();
     source_row.add(
-        &StaticText::builder(&panel).with_label("Podcast:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.podcast_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -2989,8 +3330,8 @@ fn open_reorder_podcast_sources_dialog(
     root.add_sizer(&source_row, 0, SizerFlag::Expand, 0);
 
     let action_row = BoxSizer::builder(Orientation::Horizontal).build();
-    let move_up_button = Button::builder(&panel).with_label("Sposta su").build();
-    let move_down_button = Button::builder(&panel).with_label("Sposta giù").build();
+    let move_up_button = Button::builder(&panel).with_label(&ui.move_up).build();
+    let move_down_button = Button::builder(&panel).with_label(&ui.move_down).build();
     action_row.add(&move_up_button, 1, SizerFlag::All, 5);
     action_row.add(&move_down_button, 1, SizerFlag::All, 5);
     root.add_sizer(&action_row, 0, SizerFlag::Expand, 0);
@@ -3056,8 +3397,8 @@ fn open_reorder_podcast_sources_dialog(
         refresh_choice_up(&choice_source_up, new_index);
         show_message_subdialog(
             &dialog_up,
-            "Podcast spostato",
-            &format!("{moved_label} è stato spostato sopra {target_label}."),
+            &ui.reorder_podcasts,
+            &format!("{moved_label} -> {target_label}"),
         );
     });
 
@@ -3088,8 +3429,8 @@ fn open_reorder_podcast_sources_dialog(
         refresh_choice_down(&choice_source_down, new_index);
         show_message_subdialog(
             &dialog_down,
-            "Podcast spostato",
-            &format!("{moved_label} è stato spostato sotto {target_label}."),
+            &ui.reorder_podcasts,
+            &format!("{moved_label} -> {target_label}"),
         );
     });
 
@@ -3246,19 +3587,36 @@ fn open_settings_dialog(
     playback: &Arc<Mutex<GlobalPlayback>>,
 ) {
     let settings_before = settings.lock().unwrap().clone();
+    let ui = ui_strings(&settings_before.ui_language);
     let languages_snapshot = languages.lock().unwrap().clone();
     let voices_snapshot = voices_data.lock().unwrap().clone();
+    let interface_languages = [("Italiano", "it"), ("English", "en")];
 
-    let dialog = Dialog::builder(parent, "Impostazioni")
+    let dialog = Dialog::builder(parent, &ui.settings_title)
         .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
         .with_size(560, 320)
         .build();
     let panel = Panel::builder(&dialog).build();
     let root = BoxSizer::builder(Orientation::Vertical).build();
 
+    let ui_lang_row = BoxSizer::builder(Orientation::Horizontal).build();
+    ui_lang_row.add(
+        &StaticText::builder(&panel)
+            .with_label(&ui.interface_language_label)
+            .build(),
+        0,
+        SizerFlag::AlignCenterVertical | SizerFlag::All,
+        5,
+    );
+    let choice_ui_lang = Choice::builder(&panel).build();
+    ui_lang_row.add(&choice_ui_lang, 1, SizerFlag::Expand | SizerFlag::All, 5);
+    root.add_sizer(&ui_lang_row, 0, SizerFlag::Expand, 0);
+
     let lang_row = BoxSizer::builder(Orientation::Horizontal).build();
     lang_row.add(
-        &StaticText::builder(&panel).with_label("Lingua:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.voice_language_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -3269,7 +3627,9 @@ fn open_settings_dialog(
 
     let voice_row = BoxSizer::builder(Orientation::Horizontal).build();
     voice_row.add(
-        &StaticText::builder(&panel).with_label("Voce:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.voice_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -3280,7 +3640,9 @@ fn open_settings_dialog(
 
     let rate_row = BoxSizer::builder(Orientation::Horizontal).build();
     rate_row.add(
-        &StaticText::builder(&panel).with_label("Velocità:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.rate_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -3295,7 +3657,9 @@ fn open_settings_dialog(
 
     let pitch_row = BoxSizer::builder(Orientation::Horizontal).build();
     pitch_row.add(
-        &StaticText::builder(&panel).with_label("Tono:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.pitch_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -3310,7 +3674,9 @@ fn open_settings_dialog(
 
     let volume_row = BoxSizer::builder(Orientation::Horizontal).build();
     volume_row.add(
-        &StaticText::builder(&panel).with_label("Volume:").build(),
+        &StaticText::builder(&panel)
+            .with_label(&ui.volume_label)
+            .build(),
         0,
         SizerFlag::AlignCenterVertical | SizerFlag::All,
         5,
@@ -3327,13 +3693,25 @@ fn open_settings_dialog(
     let button_row = BoxSizer::builder(Orientation::Horizontal).build();
     let btn_ok = Button::builder(&panel)
         .with_id(ID_OK)
-        .with_label("OK")
+        .with_label(&ui.ok)
         .build();
     button_row.add_spacer(1);
     button_row.add(&btn_ok, 0, SizerFlag::All, 10);
     root.add_sizer(&button_row, 0, SizerFlag::Expand, 0);
 
     panel.set_sizer(root, true);
+
+    for (label, _) in interface_languages {
+        choice_ui_lang.append(label);
+    }
+    if let Some(pos) = interface_languages
+        .iter()
+        .position(|(_, value)| *value == settings_before.ui_language)
+    {
+        choice_ui_lang.set_selection(pos as u32);
+    } else {
+        choice_ui_lang.set_selection(0);
+    }
 
     for (name, _) in &languages_snapshot {
         choice_lang.append(name);
@@ -3419,6 +3797,11 @@ fn open_settings_dialog(
 
     if dialog.show_modal() == ID_OK {
         let mut updated = settings_before.clone();
+        if let Some(sel) = choice_ui_lang.get_selection()
+            && let Some((_, value)) = interface_languages.get(sel as usize)
+        {
+            updated.ui_language = (*value).to_string();
+        }
         if let Some(sel) = choice_lang.get_selection()
             && let Some((name, _)) = languages.lock().unwrap().get(sel as usize)
         {
@@ -3442,7 +3825,9 @@ fn open_settings_dialog(
             || settings_before.rate != updated.rate
             || settings_before.pitch != updated.pitch
             || settings_before.volume != updated.volume;
-        let changed = settings_before.language != updated.language || refresh_needed;
+        let changed = settings_before.ui_language != updated.ui_language
+            || settings_before.language != updated.language
+            || refresh_needed;
 
         if changed {
             let mut locked = settings.lock().unwrap();
@@ -3536,85 +3921,69 @@ fn main() {
     refresh_all_podcast_categories(&rt, &podcast_menu_state);
 
     let _ = wxdragon::main(move |_| {
+        let ui = current_ui_strings();
         let frame = Frame::builder()
             .with_title("Sonarpad")
             .with_size(Size::new(800, 700))
             .build();
 
         let file_menu = Menu::builder().build();
-        file_menu.append(
-            ID_OPEN,
-            "&Apri...\tCtrl+O",
-            "Apri un documento",
-            ItemKind::Normal,
-        );
+        file_menu.append(ID_OPEN, &ui.menu_open, &ui.menu_open_help, ItemKind::Normal);
         file_menu.append_separator();
         #[cfg(target_os = "macos")]
         let start_menu_item = file_menu.append(
             ID_START_PLAYBACK,
-            "Avvia lettura\tCtrl+L",
-            "Avvia la lettura o la riproduzione del podcast",
+            &ui.menu_start,
+            &ui.menu_start_help,
             ItemKind::Normal,
         );
         #[cfg(target_os = "macos")]
         let play_menu_item = file_menu.append(
             ID_PLAY_PAUSE,
-            "Pausa o riprendi lettura\tCtrl+P",
-            "Mette in pausa o riprende la lettura",
+            &ui.menu_play_pause,
+            &ui.menu_play_pause_help,
             ItemKind::Normal,
         );
         #[cfg(target_os = "macos")]
-        let stop_menu_item = file_menu.append(
-            ID_STOP,
-            "Ferma lettura\tCtrl+.",
-            "Ferma la lettura o il podcast",
-            ItemKind::Normal,
-        );
+        let stop_menu_item =
+            file_menu.append(ID_STOP, &ui.menu_stop, &ui.menu_stop_help, ItemKind::Normal);
         #[cfg(target_os = "macos")]
-        let save_menu_item = file_menu.append(
-            ID_SAVE,
-            "Salva audiolibro\tCtrl+Alt+A",
-            "Salva il testo corrente come audiolibro",
-            ItemKind::Normal,
-        );
+        let save_menu_item =
+            file_menu.append(ID_SAVE, &ui.menu_save, &ui.menu_save_help, ItemKind::Normal);
         #[cfg(target_os = "macos")]
         let settings_menu_item = file_menu.append(
             ID_SETTINGS,
-            "Impostazioni (Cmd+,)",
-            "Apre le impostazioni",
+            &ui.menu_settings,
+            &ui.menu_settings_help,
             ItemKind::Normal,
         );
         #[cfg(target_os = "macos")]
         file_menu.append_separator();
-        file_menu.append(
-            ID_EXIT,
-            "&Esci\tCtrl+Q",
-            "Esci dal programma",
-            ItemKind::Normal,
-        );
+        file_menu.append(ID_EXIT, &ui.menu_exit, &ui.menu_exit_help, ItemKind::Normal);
         let help_menu = Menu::builder().build();
         help_menu.append(
             ID_ABOUT,
-            "&Informazioni sul programma...",
-            "Mostra informazioni sul programma",
+            &ui.menu_about,
+            &ui.menu_about_help,
             ItemKind::Normal,
         );
         help_menu.append(
             ID_DONATIONS,
-            "&Donazioni",
-            "Mostra informazioni per sostenere il progetto",
+            &ui.menu_donations,
+            &ui.menu_donations_help,
             ItemKind::Normal,
         );
         help_menu.append(
             ID_CHECK_UPDATES,
-            "Controlla &aggiornamenti",
-            "Controlla se esiste una nuova versione",
+            &ui.menu_updates,
+            &ui.menu_updates_help,
             ItemKind::Normal,
         );
 
         let articles_menu = Menu::builder().build();
         rebuild_articles_menu(&articles_menu, &settings, &HashSet::new());
         let articles_menu_timer = Menu::from(articles_menu.as_const_ptr());
+        let articles_menu_settings = Menu::from(articles_menu.as_const_ptr());
         let podcasts_menu = Menu::builder().build();
         rebuild_podcasts_menu(
             &podcasts_menu,
@@ -3624,12 +3993,13 @@ fn main() {
             &HashSet::new(),
         );
         let podcasts_menu_timer = Menu::from(podcasts_menu.as_const_ptr());
+        let podcasts_menu_settings = Menu::from(podcasts_menu.as_const_ptr());
 
         let menubar = MenuBar::builder()
-            .append(file_menu, "&File")
-            .append(articles_menu, "&Articoli")
-            .append(podcasts_menu, "&Podcast")
-            .append(help_menu, "&Aiuto")
+            .append(file_menu, &ui.menu_file)
+            .append(articles_menu, &ui.menu_articles)
+            .append(podcasts_menu, &ui.menu_podcasts)
+            .append(help_menu, &ui.menu_help)
             .build();
         frame.set_menu_bar(menubar);
 
@@ -3659,13 +4029,13 @@ fn main() {
         btn_sizer.add(&btn_stop, 1, SizerFlag::All, 10);
         let btn_podcast_back = Button::builder(&panel)
             .with_id(ID_PODCAST_BACKWARD)
-            .with_label(&format!("Indietro 30s ({}+Left)", MOD_CMD))
+            .with_label(&format!("{} ({}+Left)", ui.button_back_30, MOD_CMD))
             .build();
         btn_podcast_back.show(false);
         btn_sizer.add(&btn_podcast_back, 1, SizerFlag::All, 10);
         let btn_podcast_forward = Button::builder(&panel)
             .with_id(ID_PODCAST_FORWARD)
-            .with_label(&format!("Avanti 30s ({}+Right)", MOD_CMD))
+            .with_label(&format!("{} ({}+Right)", ui.button_forward_30, MOD_CMD))
             .build();
         btn_podcast_forward.show(false);
         btn_sizer.add(&btn_podcast_forward, 1, SizerFlag::All, 10);
@@ -3786,8 +4156,9 @@ fn main() {
         let rt_articles_menu = Arc::clone(&rt);
         let podcast_selection_menu = Rc::clone(&podcast_playback);
         frame.on_menu(move |event| {
+            let ui = current_ui_strings();
             if event.get_id() == ID_OPEN {
-                let dialog = FileDialog::builder(&f_menu).with_message("Apri").with_wildcard("Supportati|*.txt;*.doc;*.docx;*.pdf;*.epub;*.rtf;*.xlsx;*.xls;*.ods;*.html;*.htm|Tutti|*.*").build();
+                let dialog = FileDialog::builder(&f_menu).with_message(&ui.open).with_wildcard("Supportati|*.txt;*.doc;*.docx;*.pdf;*.epub;*.rtf;*.xlsx;*.xls;*.ods;*.html;*.htm|Tutti|*.*").build();
                 if dialog.show_modal() == ID_OK
                     && let Some(path) = dialog.get_path()
                 {
@@ -3808,6 +4179,7 @@ fn main() {
                 let dialog = MessageDialog::builder(&f_menu, &about_message(), about_title())
                     .with_style(MessageDialogStyle::OK | MessageDialogStyle::IconInformation)
                     .build();
+                localize_standard_dialog_buttons(&dialog);
                 dialog.show_modal();
             } else if event.get_id() == ID_DONATIONS {
                 open_donations_dialog(&f_menu);
@@ -3841,8 +4213,8 @@ fn main() {
                     open_delete_article_source_dialog(&f_menu, &settings_menu)
                     && confirm_delete_dialog(
                         &f_menu,
-                        "Conferma eliminazione",
-                        "Sei sicuro di eliminare l'RSS selezionato?",
+                        &ui.confirm_delete_title,
+                        &ui.confirm_delete_rss_message,
                     )
                 {
                     delete_article_source(
@@ -3865,8 +4237,8 @@ fn main() {
                 sort_article_sources_alphabetically(&settings_menu, &article_menu_state_menu);
                 show_message_dialog(
                     &f_menu,
-                    "Fonti riordinate",
-                    "Le fonti degli articoli sono state riordinate alfabeticamente.",
+                    &ui.sorted_articles_title,
+                    &ui.sorted_articles_message,
                 );
             } else if event.get_id() == ID_PODCASTS_ADD {
                 if let Some(result) = open_add_podcast_dialog(&f_menu, &rt_articles_menu) {
@@ -3881,8 +4253,8 @@ fn main() {
                 if let Some(source_index) = open_delete_podcast_dialog(&f_menu, &settings_menu)
                     && confirm_delete_dialog(
                         &f_menu,
-                        "Conferma eliminazione",
-                        "Sei sicuro di eliminare il podcast selezionato?",
+                        &ui.confirm_delete_title,
+                        &ui.confirm_delete_podcast_message,
                     )
                 {
                     delete_podcast_source(source_index, &settings_menu, &podcast_menu_state_menu);
@@ -3901,13 +4273,14 @@ fn main() {
                 sort_podcast_sources_alphabetically(&settings_menu, &podcast_menu_state_menu);
                 show_message_dialog(
                     &f_menu,
-                    "Podcast riordinati",
-                    "I podcast salvati sono stati riordinati alfabeticamente.",
+                    &ui.sorted_podcasts_title,
+                    &ui.sorted_podcasts_message,
                 );
             } else if let Some((category_index, result_index)) =
                 decode_podcast_category_podcast_menu_id(event.get_id())
             {
-                if let Some(category) = podcasts::apple_categories_it().get(category_index) {
+                let categories = podcasts::apple_categories(&settings_menu.lock().unwrap().ui_language);
+                if let Some(category) = categories.get(category_index) {
                     let result = {
                         let state = podcast_menu_state_menu.lock().unwrap();
                         state
@@ -3961,6 +4334,7 @@ fn main() {
                             )
                             .with_style(MessageDialogStyle::OK | MessageDialogStyle::IconError)
                             .build();
+                            localize_standard_dialog_buttons(&dialog);
                             dialog.show_modal();
                             return;
                         }
@@ -3997,11 +4371,16 @@ fn main() {
                             println!("ERROR: Apertura esterna podcast fallita: {}", err);
                             let dialog = MessageDialog::builder(
                                 &f_menu,
-                                &format!("Impossibile aprire il podcast.\n\n{err}"),
-                                "Errore podcast",
+                                &if Settings::load().ui_language == "it" {
+                                    format!("Impossibile aprire il podcast.\n\n{err}")
+                                } else {
+                                    format!("Unable to open the podcast.\n\n{err}")
+                                },
+                                &current_ui_strings().podcast_error_title,
                             )
                             .with_style(MessageDialogStyle::OK | MessageDialogStyle::IconError)
                             .build();
+                            localize_standard_dialog_buttons(&dialog);
                             dialog.show_modal();
                         } else {
                             append_podcast_log("podcast_menu.external_open_ok");
@@ -4637,6 +5016,7 @@ fn main() {
         let f_save = frame;
         let s_save = Arc::clone(&settings);
         let save_action: Rc<dyn Fn()> = Rc::new(move || {
+            let ui = current_ui_strings();
             let text = tc_s.get_value();
             if text.trim().is_empty() {
                 return;
@@ -4648,7 +5028,7 @@ fn main() {
             };
 
             let dialog = FileDialog::builder(&f_save)
-                .with_message("Salva audiolibro")
+                .with_message(&ui.save_audiobook_title)
                 .with_wildcard("File MP3 (*.mp3)|*.mp3")
                 .with_style(FileDialogStyle::Save | FileDialogStyle::OverwritePrompt)
                 .build();
@@ -4661,7 +5041,7 @@ fn main() {
                 let total = chunks.len();
                 append_podcast_log(&format!("audiobook_save.chunks total={total}"));
 
-                let progress_dialog = Dialog::builder(&f_save, "Creazione Audiolibro")
+                let progress_dialog = Dialog::builder(&f_save, &ui.create_audiobook_title)
                     .with_style(
                         DialogStyle::Caption
                             | DialogStyle::SystemMenu
@@ -4673,7 +5053,7 @@ fn main() {
                 let progress_panel = Panel::builder(&progress_dialog).build();
                 let progress_root = BoxSizer::builder(Orientation::Vertical).build();
                 let progress_label = StaticText::builder(&progress_panel)
-                    .with_label("Inizializzazione...")
+                    .with_label(&ui.initializing)
                     .build();
                 progress_root.add(
                     &progress_label,
@@ -4692,8 +5072,8 @@ fn main() {
                 );
                 let progress_buttons = BoxSizer::builder(Orientation::Horizontal).build();
                 let progress_cancel = Button::builder(&progress_panel)
-                    .with_id(ID_CANCEL)
-                    .with_label("Annulla")
+                    .with_id(ID_AUDIOBOOK_DIALOG_CANCEL)
+                    .with_label(&ui.cancel)
                     .build();
                 progress_buttons.add_spacer(1);
                 progress_buttons.add(&progress_cancel, 0, SizerFlag::All, 10);
@@ -4704,7 +5084,7 @@ fn main() {
                     0,
                 );
                 progress_panel.set_sizer(progress_root, true);
-                progress_dialog.set_escape_id(ID_CANCEL);
+                progress_dialog.set_escape_id(ID_AUDIOBOOK_DIALOG_CANCEL);
                 progress_dialog.show(true);
 
                 let rt_save = Arc::clone(&rt_s);
@@ -4764,10 +5144,8 @@ fn main() {
                                     }
                                     Err(_) => {
                                         abort_worker.store(true, Ordering::Relaxed);
-                                        save_state_worker.lock().unwrap().error_message = Some(
-                                            "La conversione dell'audiolibro non è riuscita."
-                                                .to_string(),
-                                        );
+                                        save_state_worker.lock().unwrap().error_message =
+                                            Some(ui.audiobook_conversion_failed.clone());
                                         return;
                                     }
                                 }
@@ -4779,7 +5157,7 @@ fn main() {
                         if worker.join().is_err() {
                             abort_requested_thread.store(true, Ordering::Relaxed);
                             save_state_thread.lock().unwrap().error_message =
-                                Some("La conversione dell'audiolibro non è riuscita.".to_string());
+                                Some(ui.audiobook_conversion_failed.clone());
                             append_podcast_log("audiobook_save.worker_join_failed");
                             return;
                         }
@@ -4795,16 +5173,15 @@ fn main() {
                     for maybe_data in results.lock().unwrap().iter_mut() {
                         let Some(data) = maybe_data.take() else {
                             save_state_thread.lock().unwrap().error_message =
-                                Some("La conversione dell'audiolibro non è riuscita.".to_string());
+                                Some(ui.audiobook_conversion_failed.clone());
                             return;
                         };
                         full_audio.extend(data);
                     }
 
                     if std::fs::write(&path_buf, full_audio).is_err() {
-                        save_state_thread.lock().unwrap().error_message = Some(
-                            "Il file audiolibro non è stato salvato correttamente.".to_string(),
-                        );
+                        save_state_thread.lock().unwrap().error_message =
+                            Some(ui.audiobook_file_not_saved.clone());
                         append_podcast_log("audiobook_save.write_failed");
                         return;
                     }
@@ -4840,7 +5217,7 @@ fn main() {
                         abort_requested.store(true, Ordering::Relaxed);
                         *cancel_pending.borrow_mut() = true;
                         progress_cancel.enable(false);
-                        progress_label_cancel.set_label("Annullamento audiolibro in corso...");
+                        progress_label_cancel.set_label(&ui.cancelling_audiobook);
                     }
                 });
                 progress_dialog_close.on_close(move |event| {
@@ -4861,7 +5238,7 @@ fn main() {
                         abort_close.store(true, Ordering::Relaxed);
                         *cancel_pending_close.borrow_mut() = true;
                         progress_cancel_close.enable(false);
-                        progress_label_close.set_label("Annullamento audiolibro in corso...");
+                        progress_label_close.set_label(&ui.cancelling_audiobook);
                     }
 
                     event.skip(false);
@@ -4885,7 +5262,7 @@ fn main() {
                             state.completed_chunks
                         ));
                         progress_timer_handle.stop();
-                        progress_label_tick.set_label("Errore durante la conversione.");
+                        progress_label_tick.set_label(&ui.audiobook_conversion_error);
                         progress_gauge_tick.set_value(state.completed_chunks as i32);
                         *pending_dialog_tick.borrow_mut() =
                             Some(PendingSaveDialog::Error(error_message.clone()));
@@ -4902,7 +5279,7 @@ fn main() {
                                 ));
                                 show_modeless_message_dialog(
                                     &f_save,
-                                    "Errore conversione",
+                                    &ui.conversion_error_title,
                                     &error_message,
                                 );
                                 append_podcast_log("audiobook_save.error_closed");
@@ -4928,7 +5305,7 @@ fn main() {
                             "audiobook_save.tick.completed completed_chunks={}",
                             state.completed_chunks
                         ));
-                        progress_label_tick.set_label("Audiolibro salvato correttamente.");
+                        progress_label_tick.set_label(&ui.audiobook_saved_ok);
                         progress_gauge_tick.set_value(total.max(1) as i32);
                         progress_timer_handle.stop();
                         *pending_dialog_tick.borrow_mut() = Some(PendingSaveDialog::Success);
@@ -4942,8 +5319,8 @@ fn main() {
                                 append_podcast_log("audiobook_save.show_success");
                                 show_modeless_message_dialog(
                                     &f_save,
-                                    "Salvataggio completato",
-                                    "Audiolibro salvato correttamente.",
+                                    &ui.save_completed_title,
+                                    &ui.audiobook_saved_ok,
                                 );
                                 append_podcast_log("audiobook_save.success_closed");
                             }
@@ -4959,7 +5336,7 @@ fn main() {
                         append_podcast_log(&format!(
                             "audiobook_save.tick.cancelling completed_chunks={current}"
                         ));
-                        progress_label_tick.set_label("Annullamento audiolibro in corso...");
+                        progress_label_tick.set_label(&ui.cancelling_audiobook);
                         progress_gauge_tick.set_value(current);
                         return;
                     }
@@ -4990,7 +5367,14 @@ fn main() {
         let voices_state = Arc::clone(&voices_data);
         let languages_state = Arc::clone(&languages);
         let playback_state = Arc::clone(&playback);
+        let article_menu_state_settings = Arc::clone(&article_menu_state);
+        let podcast_menu_state_settings = Arc::clone(&podcast_menu_state);
+        let btn_save_settings = btn_save;
+        let btn_settings_settings = btn_settings;
+        let btn_podcast_back_settings = btn_podcast_back;
+        let btn_podcast_forward_settings = btn_podcast_forward;
         let settings_action: Rc<dyn Fn()> = Rc::new(move || {
+            let previous_ui_language = settings_state.lock().unwrap().ui_language.clone();
             open_settings_dialog(
                 &frame_settings,
                 &settings_state,
@@ -4998,6 +5382,21 @@ fn main() {
                 &languages_state,
                 &playback_state,
             );
+            let updated_ui_language = settings_state.lock().unwrap().ui_language.clone();
+            if previous_ui_language != updated_ui_language {
+                refresh_localized_main_ui(
+                    &frame_settings,
+                    &settings_state,
+                    (&articles_menu_settings, &podcasts_menu_settings),
+                    (&article_menu_state_settings, &podcast_menu_state_settings),
+                    (
+                        &btn_save_settings,
+                        &btn_settings_settings,
+                        &btn_podcast_back_settings,
+                        &btn_podcast_forward_settings,
+                    ),
+                );
+            }
         });
 
         let settings_action_click = Rc::clone(&settings_action);

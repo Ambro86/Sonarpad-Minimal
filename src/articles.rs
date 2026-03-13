@@ -8,6 +8,7 @@ use std::time::Duration;
 use url::Url;
 
 const DEFAULT_IT_FEEDS: &str = include_str!("../i18n/feed_it.txt");
+const DEFAULT_EN_FEEDS: &str = include_str!("../i18n/feed_en.txt");
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct ArticleItem {
@@ -27,8 +28,8 @@ pub struct ArticleSource {
     pub items: Vec<ArticleItem>,
 }
 
-pub fn default_italian_sources() -> Vec<ArticleSource> {
-    DEFAULT_IT_FEEDS
+fn parse_default_sources(feeds: &str) -> Vec<ArticleSource> {
+    feeds
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -50,6 +51,22 @@ pub fn default_italian_sources() -> Vec<ArticleSource> {
             })
         })
         .collect()
+}
+
+pub fn default_italian_sources() -> Vec<ArticleSource> {
+    parse_default_sources(DEFAULT_IT_FEEDS)
+}
+
+pub fn default_english_sources() -> Vec<ArticleSource> {
+    parse_default_sources(DEFAULT_EN_FEEDS)
+}
+
+pub fn default_sources_for_ui_language(ui_language: &str) -> Vec<ArticleSource> {
+    if ui_language.eq_ignore_ascii_case("en") {
+        default_english_sources()
+    } else {
+        default_italian_sources()
+    }
 }
 
 pub fn normalize_url(input: &str) -> String {
