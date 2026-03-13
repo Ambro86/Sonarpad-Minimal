@@ -65,7 +65,7 @@
   "confirm_delete_title": "Confirm deletion",
   "confirm_delete_rss_message": "Are you sure you want to delete the selected RSS source?",
   "confirm_delete_podcast_message": "Are you sure you want to delete the selected podcast?",
-  "sorted_articles_title": "Sources sorted",
+  "sorted_articles_title": "Sort sources alphabetically",
   "sorted_articles_message": "Article sources have been sorted alphabetically.",
   "sorted_podcasts_title": "Sort podcasts alphabetically",
   "sorted_podcasts_message": "Podcasts have been sorted alphabetically.",

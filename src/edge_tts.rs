@@ -28,6 +28,16 @@ fn retry_backoff_delay(attempt: usize) -> Duration {
     Duration::from_millis((500 * attempt as u64).min(3_000))
 }
 
+fn is_retry_forever_timeout(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("WebSocket connect timeout")
+        || message.contains("send timeout")
+        || message.contains("audio read timeout")
+        || message.contains("Realtime speech.config send timeout")
+        || message.contains("Realtime SSML send timeout")
+        || message.contains("Realtime audio read timeout")
+}
+
 type EdgeSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type EdgeSocketWriter = futures_util::stream::SplitSink<EdgeSocket, Message>;
 type EdgeSocketReader = futures_util::stream::SplitStream<EdgeSocket>;
@@ -71,7 +81,8 @@ pub async fn synthesize_text_with_retry(
     max_retries: usize,
 ) -> Result<Vec<u8>> {
     let mut last_err = anyhow!("Sintesi fallita");
-    for attempt in 1..=max_retries {
+    let mut attempt = 1usize;
+    loop {
         match synthesize_text_chunk(text, voice, rate, pitch, volume).await {
             Ok(data) => {
                 if data.is_empty() {
@@ -80,18 +91,27 @@ pub async fn synthesize_text_with_retry(
                 return Ok(data);
             }
             Err(e) => {
+                let retry_forever = is_retry_forever_timeout(&e);
                 println!(
                     "DEBUG: Tentativo {}/{} fallito: {}",
-                    attempt, max_retries, e
+                    attempt,
+                    if retry_forever {
+                        "inf".to_string()
+                    } else {
+                        max_retries.to_string()
+                    },
+                    e
                 );
                 last_err = e;
-                if attempt < max_retries {
+                if retry_forever || attempt < max_retries {
                     tokio::time::sleep(retry_backoff_delay(attempt)).await;
+                    attempt += 1;
+                    continue;
                 }
+                return Err(last_err);
             }
         }
     }
-    Err(last_err)
 }
 
 pub struct EdgeRealtimeSession {

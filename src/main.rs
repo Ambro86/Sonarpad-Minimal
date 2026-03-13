@@ -5173,7 +5173,13 @@ fn main() {
                                         results_worker.lock().unwrap()[index] = Some(data);
                                         save_state_worker.lock().unwrap().completed_chunks += 1;
                                     }
-                                    Err(_) => {
+                                    Err(err) => {
+                                        append_podcast_log(&format!(
+                                            "audiobook_save.chunk_error index={} chars={} error={}",
+                                            index,
+                                            chunk.chars().count(),
+                                            err
+                                        ));
                                         abort_worker.store(true, Ordering::Relaxed);
                                         save_state_worker.lock().unwrap().error_message =
                                             Some(ui.audiobook_conversion_failed.clone());
@@ -5203,6 +5209,7 @@ fn main() {
                     let mut full_audio = Vec::new();
                     for maybe_data in results.lock().unwrap().iter_mut() {
                         let Some(data) = maybe_data.take() else {
+                            append_podcast_log("audiobook_save.missing_chunk_data");
                             save_state_thread.lock().unwrap().error_message =
                                 Some(ui.audiobook_conversion_failed.clone());
                             return;
