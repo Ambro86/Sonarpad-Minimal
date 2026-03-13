@@ -240,7 +240,36 @@ fn default_ui_language() -> String {
             }
         }
     }
+
+    #[cfg(target_os = "macos")]
+    if let Some(locale) = macos_system_locale() {
+        let lower = locale.to_lowercase();
+        if lower.starts_with("it") {
+            return "it".to_string();
+        }
+        if !lower.trim().is_empty() {
+            return "en".to_string();
+        }
+    }
+
     "en".to_string()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_system_locale() -> Option<String> {
+    let output = std::process::Command::new("/usr/bin/defaults")
+        .args(["read", "-g", "AppleLocale"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let locale = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if locale.is_empty() {
+        None
+    } else {
+        Some(locale)
+    }
 }
 
 fn normalize_ui_language(value: &str) -> String {
@@ -1111,8 +1140,10 @@ fn load_file_with_progress(parent: &Frame, path: &Path) -> Result<String, String
     loop {
         std::thread::sleep(std::time::Duration::from_millis(100));
         if let Some(result) = state.lock().unwrap().take() {
-            let _ = progress.update(100, Some(&ui.document_loaded));
             progress.destroy();
+            if result.is_ok() {
+                show_message_dialog(parent, &ui.open_document_title, &ui.document_loaded);
+            }
             return result;
         }
 

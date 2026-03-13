@@ -505,6 +505,29 @@ func preprocessImageForOCR(_ image: CGImage) -> CGImage? {
     return context.createCGImage(boosted, from: boosted.extent)
 }
 
+func rotateImage180(_ image: CGImage) -> CGImage? {
+    let width = image.width
+    let height = image.height
+    guard let colorSpace = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB) else {
+        return nil
+    }
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: image.bitsPerComponent,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: image.bitmapInfo.rawValue
+    ) else {
+        return nil
+    }
+    context.translateBy(x: CGFloat(width), y: CGFloat(height))
+    context.rotate(by: .pi)
+    context.draw(image, in: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+    return context.makeImage()
+}
+
 func observationSortKey(_ observation: VNRecognizedTextObservation) -> (CGFloat, CGFloat) {
     // Vision uses a normalized coordinate system with origin at bottom-left.
     // Sort top-to-bottom, then left-to-right to mimic screen OCR tools like VOCR.
@@ -530,12 +553,51 @@ func recognizePageText(_ image: CGImage) throws -> String {
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
     request.minimumTextHeight = 0.0
+    request.recognitionLanguages = ["it-IT", "en-US"]
     let handler = VNImageRequestHandler(cgImage: image, options: [:])
     try handler.perform([request])
     let observations = sortObservationsForReading(request.results ?? [])
     return observations
         .compactMap { $0.topCandidates(1).first?.string }
         .joined(separator: "\n")
+}
+
+func textQualityScore(_ text: String) -> Int {
+    let lower = " \(text.lowercased()) "
+    let markers = [
+        " di ", " del ", " della ", " dei ", " il ", " la ", " e ", " per ",
+        " con ", " che ", " ai ", " articolo ", " decreto ", " iva ", " handicap "
+    ]
+    let markerScore = markers.reduce(0) { partial, marker in
+        partial + lower.components(separatedBy: marker).count - 1
+    }
+    let letters = text.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+    let digits = text.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }.count
+    let punctuation = text.filter { "§|[]{}<>".contains($0) }.count
+    return markerScore * 40 + letters - digits * 2 - punctuation * 4
+}
+
+func recognizeBestPageText(_ image: CGImage) throws -> (String, String, Int) {
+    var candidates: [(String, CGImage)] = [("vision_ocr_vocr_style", image)]
+    if let rotated = rotateImage180(image) {
+        candidates.append(("vision_ocr_vocr_style_rot180", rotated))
+    }
+
+    var bestText = ""
+    var bestSource = "vision_ocr_vocr_style"
+    var bestScore = Int.min
+
+    for (source, candidateImage) in candidates {
+        let recognized = try recognizePageText(candidateImage)
+        let score = textQualityScore(recognized)
+        if score > bestScore {
+            bestText = recognized
+            bestSource = source
+            bestScore = score
+        }
+    }
+
+    return (bestText, bestSource, bestScore)
 }
 
 guard CommandLine.arguments.count >= 2 else {
@@ -566,8 +628,8 @@ for index in 0..<document.pageCount {
             return
         }
         do {
-            let recognized = try recognizePageText(processedImage)
-            logInfo("page=\(index + 1) source=vision_ocr_vocr_style length=\(recognized.count)")
+            let (recognized, source, score) = try recognizeBestPageText(processedImage)
+            logInfo("page=\(index + 1) source=\(source) length=\(recognized.count) score=\(score)")
             appendPageText(recognized, pageNumber: index + 1, to: &output)
         } catch {
             fputs("vision OCR failed: \(error)\n", stderr)

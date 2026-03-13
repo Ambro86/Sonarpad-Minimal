@@ -1,6 +1,6 @@
-# Sonarpad Minimal
+# Sonarpad for Mac
 
-Sonarpad Minimal is a lightweight edition of Sonarpad focused on accessible reading and listening.
+Sonarpad for Mac is a lightweight edition of Sonarpad focused on accessible reading and listening.
 
 It can:
 - open and read `TXT`, `PDF`, `DOC`, `DOCX`, `RTF`, `EPUB`, `HTML`, and spreadsheet files
@@ -14,5 +14,5 @@ https://github.com/Ambro86/Sonarpad/
 
 ## Latest macOS downloads
 
-- Mac Apple Silicon: https://github.com/Ambro86/Sonarpad-Mac/releases/latest/download/Sonarpad-macOS-AppleSilicon.dmg
-- Mac Intel: https://github.com/Ambro86/Sonarpad-Mac/releases/latest/download/Sonarpad-macOS-Intel.dmg
+- [Sonarpad Silicon](https://github.com/Ambro86/Sonarpad-Mac/releases/latest/download/Sonarpad-macOS-AppleSilicon.dmg)
+- [Sonarpad Intel](https://github.com/Ambro86/Sonarpad-Mac/releases/latest/download/Sonarpad-macOS-Intel.dmg)
